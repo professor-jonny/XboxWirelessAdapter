@@ -1,214 +1,4294 @@
-## Frame format
+assumed# Xbox MN-740 Wireless XPP over NLB (Xbox Peripheral Protocol) - Complete Specification v34.0
 
-The communication protocol is weird - the console and the wireless adapter send each other ethernet frames of type `MS NLB heartbeat`. Ironically, they exchange the frames roughly every second, which indeed makes it a heartbeat. However, the similarities with `MS NLB` protocol end here.  
+**Status**: Complete
 
-The actual structure of the frame is the following:
-- The standard ethernet frame header:
-    - 6 bytes for the source MAC address;
-    - 6 bytes for the destination MAC address;
-    - 2 bytes for the frame type, `0x886f` in our case;
-- The body of the frame:
-    - 4 bytes for the signature, always equals to `XBOX`;
-    - 2 bytes for the version, always equals to `\x01\x01`;
-    - 1 byte for the size of the body in DWORDs (the actual size divided by 4; the body seems to be padded with zeroes to be multiple of 4 in size);
-    - 1 byte for the packet type, more on that later;
-    - 2 bytes for the nonce, should be taken from the request and returned in the response;
-    - 2 bytes for the checksum;
-    - the payload with the size of `(body_size * 4) - 12`, where `body_size` is the field described above and the constant `12` is the size of all the body fields except the payload;
-- An optional padding with zeroes to make the ethernet frame at least 64 bytes in size as the standard requires. Note: if you're capturing the traffic with the Wireshark and the frame size is 60 bytes instead of 64, this is because the last 4 bytes of the frame are a checksum, and your NIC strips it off before the frame is captured.
+**Protocol information**: Xbox Peripheral Protocol (XPP) over NLB
+The MN-740 is an Ethernet-to-Wireless bridge, but at its core, it is a managed peripheral. Unlike a standard "dumb" bridge, the Xbox console needs to control the radio (to scan for networks, set WEP keys, etc.).
 
+Microsoft used the existing Ethernet port and created a "Virtual Serial Bus" by wrapping management commands in Fake NLB Heartbeats. This allowed the Xbox to configure the adapter without needing a complex TCP/IP stack.
 
-## Packet types
+The configuration payload structure resembles Wi-Fi Protected Setup (WPS) TLV encoding but has been modified to be lightweight.
 
-The packet type can be one of the following values:
-```
-PACKET_TYPE_HANDSHAKE_REQUEST = b'\x01'
-PACKET_TYPE_HANDSHAKE_RESPONSE = b'\x02'
-PACKET_TYPE_NETWORKS_LIST_REQUEST = b'\x03'
-PACKET_TYPE_NETWORKS_LIST_RESPONSE = b'\x04'
-PACKET_TYPE_ADAPTER_INFO_REQUEST = b'\x05'
-PACKET_TYPE_ADAPTER_INFO_RESPONSE = b'\x06'
-PACKET_TYPE_CONNECT_TO_SSID_REQUEST = b'\x07'
-PACKET_TYPE_CONNECT_TO_SSID_RESPONSE = b'\x08'
-PACKET_TYPE_BEACON_REQUEST = b'\x09'
-PACKET_TYPE_BEACON_RESPONSE = b'\x0a'
-```
-Frames with any other packet types are considered invalid (TODO add offset in the dashboard)
+the main problem with the MN740 wireless adaptor has been the lack of WPA and newer protocols, the adaptor is actually hampered at a firmware level to WEP128 when the adaptor actually supports WPA, there is a break down of what is required to patch in WPA support in the MN-740 later on in this document
 
+It was the asumption that the Xbox UI is not capable of WPA and long passwords this thinking is wrong, the Xbox has a gated adaptor capibility function to enable new UI options the WEP64 and WEP128 options are actually gated also, the handshake posesses two hard coded values that state the encription an cypher suit the adaptor is capable of back to the dash.
+The xbox dash is aware of cyphers and encription support all the way up to wpa/WPA2 with the latest dash files.
+The xbox supports PMk formatted hex and ASCII passwords up to 63 characters as per the WPA/WPA2 standard.
 
-## Requests and responses payloads
-
-### PACKET_TYPE_HANDSHAKE_REQUEST
-Body size: `0x07` DWORDs (28 bytes)
-Payload size: `0x04` DWORDs (16 bytes)
-
-- 16 bytes of auth challenge data.
-
-### PACKET_TYPE_HANDSHAKE_RESPONSE
-Body size: `0x43` DWORDs (268 bytes)
-Payload size: `0x40` DWORDs (256 bytes)
-
-- 20 bytes of auth challenge response;
-- 84 bytes of auth copyright string (no zero termination, the size is fixed);
-- 32 bytes of wireless adapter name string (padded with zeroes, no zero termination, the size is fixed);
-- 32 bytes of wireless adapter firmware version (padded with zeroes, no zero termination, the size is fixed);
-- 51 bytes of yet unknown data;
-- 1 byte defining the current SSID length;
-- 32 bytes of current SSID string (padded with zeroes, no zero termination, the size is fixed);
-- 4 bytes of yet unknown data.
-
-### PACKET_TYPE_BEACON_REQUEST
-Body size: `0x03` DWORDs (12 bytes)
-Payload size: `0x00` DWORDs (0 bytes)
-
-The payload is absent here.
-
-### PACKET_TYPE_BEACON_RESPONSE
-Body size: `0x04` DWORDs (16 bytes)
-Payload size: `0x01` DWORDs (4 bytes)
-
-- 3 bytes of yet unknown data (probably the current status);
-- 1 unused byte, filled with zero.
-
-### PACKET_TYPE_ADAPTER_INFO_REQUEST
-Body size: `0x08` DWORDs (32 bytes)
-Payload size: `0x05` DWORDs (20 bytes)
-
-- 20 (?) bytes of yet unknown data;
-
-### PACKET_TYPE_ADAPTER_INFO_RESPONSE
-_(Sizes seem to represent a particular case, please ingore this payload description for now)_
-Body size: `0x0F` DWORDs (60 bytes)
-Payload size: `0x0C` DWORDs (48 bytes)
-
-- 1 byte of status (0 means OK; 1,2,3 mean errors)
-- 25 bytes of yet unknown data (bytes 0-2 seems to be equal to the bytes 0-2 from the request's first chunk);
-- 1 byte defining the current SSID length;
-- 32 bytes of current SSID string (padded with zeroes, no zero termination, the size is fixed);
-
-### PACKET_TYPE_CONNECT_TO_SSID_REQUEST
-
-Payload uses TLV (Tag-Length-Value) encoding. See "Protocol Relationships" section below for details.
-
-**Confirmed TLV Tags:**
-- `0x01`: SSID (up to 32 bytes)
-- `0x02`: Password/Passphrase (up to 63 bytes)
-- `0x03`: Security Type (1 byte)
-
-### PACKET_TYPE_CONNECT_TO_SSID_RESPONSE
-
-Payload structure not yet fully documented.
 
 ---
 
-## Protocol Relationships
+## Table of Contents
 
-### TLV Encoding (Industry Standard)
-The `PACKET_TYPE_CONNECT_TO_SSID_REQUEST` payload uses standard Tag-Length-Value (TLV) encoding, commonly found in:
-- Wi-Fi Protected Setup (WPS) configuration messages
-- IEEE 802.16 WiMAX configuration files
-- LDAP directory information trees
-- Smart card EMV payment systems
+### Packet Reference (Linear)
+1. [Packet Transport Types](#1-packet-transport-types)
+   - [1.1 NLB (EtherType 0x886f)](#11-transport-nlb-ethertype-0x886f)
+   - [1.2 UDP Port 2002](#12-transport-udp-port-2002)
+   - [1.3 EAPOL (EtherType 0x888e)](#13-transport-eapol-ethertype-0x888e)
+2. [UDP Type 0x00 - ECHO](#2-type-0x00---echo)
+3. [NLB Type 0x01 - HANDSHAKE_REQUEST](#3-type-0x01---handshake_request)
+4. [NLB Type 0x02 - HANDSHAKE_RESPONSE](#4-type-0x02---handshake_response)
+5. [NLB Type 0x03 - NETWORKS_LIST_REQUEST](#5-type-0x03---networks_list_request)
+6. [NLB Type 0x04 - NETWORKS_LIST_RESPONSE](#6-type-0x04---networks_list_response)
+7. [NLB Type 0x05 - ADAPTER_INFO_REQUEST](#7-type-0x05---adapter_info_request)
+8. [NLB Type 0x06 - ADAPTER_INFO_RESPONSE](#8-type-0x06---adapter_info_response)
+9. [NLB Type 0x07 - CONNECT_TO_SSID_REQUEST](#9-type-0x07---connect_to_ssid_request)
+10. [NLB Type 0x08 - CONNECT_TO_SSID_RESPONSE](#10-type-0x08---connect_to_ssid_response)
+11. [UDP Type 0x08 - ASSOCIATE](## 11. Type 0x08 - ASSOCIATE (UDP))
+12. [NLB Type 0x09 - BEACON_REQUEST](#12-type-0x09---beacon_request)
+13. [NLB Type 0x0a - BEACON_RESPONSE](#13-type-0x0a---beacon_response)
+14. [NLB Type 0x0b - SILENTLY_DROPPED](#14-type-0x0b---silently_dropped)
+15. [NLB Type 0x0c - SILENTLY_DROPPED](#15-type-0x0c---silently_dropped)
+16. [UDP Type 0x0d - DISCOVERY](#16-type-0x0d---discovery)
+17. [UDP Type 0x0e - DISCOVERY_RESPONSE](#17-type-0x0e---discovery_response)
+18. [NLB Type 0x0f - SILENTLY_DROPPED](#18-type-0x0f---silently_dropped)
+19. [EAPOL Type 0x11 - WPA_ASSOC / WPA_EXCHANGE](#19-type-0x11---wpa_assoc--wpa_exchange)
+20. [HMAC Security Model} (#20-HMAC Security Model)
 
-**TLV Structure:**
-```
-Tag (1 byte) | Length (1 byte) | Value (variable)
-```
-
-**Confirmed Tags:**
-- `0x01`: SSID (up to 32 bytes, per IEEE 802.11)
-- `0x02`: Password/Passphrase (up to 63 bytes for WPA-PSK)
-- `0x03`: Security Type (1 byte)
-
-**Security Type Values (Tag 0x03):**
-
-For original Xbox Wireless Adapter (2002-2005 era):
-- `0x00`: Open/No Security
-- `0x01`: WEP (Wired Equivalent Privacy - only common security at launch)
-- `0x02`: WPA-PSK (WPA with Pre-Shared Key - available after 2003)
-
-**Historical Note:** WPA2 was not ratified until June 2004, after the original Xbox wireless adapter was released.
-
-This TLV format allows extensibility - new configuration parameters can be added by defining new tag values without breaking existing implementations.
-
-### Relationship to WPS
-While the Xbox protocol uses a custom transport layer (MS NLB heartbeat frames with HMAC-SHA1 authentication), the WiFi configuration payload structure closely resembles Wi-Fi Protected Setup (WPS) TLV encoding. However, unlike WPS which uses EAP (Extensible Authentication Protocol) over standard 802.11 frames, Xbox uses a proprietary Ethernet-based transport.
-
-**Key Difference:** Standard WPS uses 16-bit attribute IDs (e.g., 0x1045 for SSID), while Xbox uses simplified 8-bit tags (0x01 for SSID), suggesting Microsoft adapted WPS concepts for their lightweight custom protocol.
-
-**WPS to Xbox Tag Mapping:**
-| Xbox Tag | WPS Attribute ID | Description |
-|----------|------------------|-------------|
-| `0x01`   | `0x1045`         | SSID / Network Name |
-| `0x02`   | `0x1027`         | Network Key / Passphrase |
-| `0x03`   | `0x1003`         | Authentication Type |
+### Supporting Information
+- [Connection Workflows](#connection-workflows)
+- [Security Types Reference](#security-types-reference)
+- [Signal Strength Conversion](#signal-strength-conversion)
+- [Firmware Function Map](#firmware-function-map)
+- [Implementation Checklist](#implementation-checklist)
+- [WPA/WPA2 Implementation](#wpa-wpa2-implementation)
+- [Troubleshooting Guide](#troubleshooting-guide)
+- [Packet Flow Timing Diagram](#packet-flow-timing-diagram)
 
 ---
 
-## Appendix A: Reverse Engineering Notes (Xbox Internals - Unverified)
+### 1. Packet Transport Types
 
-The following information is derived from Ghidra analysis of the xonlinedash.xbe binary and represents **educated guesses about Xbox internal implementation**. These details are **NOT required for a working emulator** - the Python and C reference implementations work without implementing any of this logic.
+Three distinct transports are used across all packet types. Each has a different frame structure. The transport used by each packet type is listed in the **Transport** field at the top of its section.
 
-### Xbox Internal State Structure (Speculative)
+```
+Transport         | EtherType | Used by
+------------------|-----------|----------------------------------------------------------
+NLB (XPP)         | 0x886f    | Types 0x01–0x09, 0x0A, 0x0B, 0x0C, 0x0F (management)
+UDP port 2002     | 0x0800    | Types 0x00, 0x08, 0x0D, 0x0E (discovery / echo)
+EAPOL (802.1X)    | 0x888e    | Type 0x11 only (WPA authentication)
+```
 
-Analysis suggests the Xbox maintains an internal state structure (`AutoClass1`) at offset `0x1000` with the following fields:
-
-- **Offset 0x02** - `source_mac` (6 bytes) - MAC address of wireless adapter
-- **Offset 0x0c** - `response_type_enum` (1 byte) - Response type indicator (unconfirmed purpose)
-- **Offset 0x0d** - `is_connected_maybe` (1 byte) - Possible connection status flag
-- **Offset 0x14** - `nlb_frame_copy` (pointer) - Possible copy of last NLB frame
-- **Offset 0x18** - `kernel_tick_count` (4 bytes) - System timing value
-- **Offset 0x1c** - `kernel_tick_count_2` (4 bytes) - Additional timing value
-- **Offset 0x20** - `delay_maybe` (4 bytes) - Possible retry delay value
-- **Offset 0x24** - `attempts_count_maybe` (4 bytes) - Possible retry counter
-- **Offset 0x2c** - `hmac_message` (16 bytes) - HMAC challenge data storage
-- **Offset 0x40** - `error_code` (pointer) - Possible error code storage
-
-**Note:** Field names ending in "maybe" indicate uncertainty. The structure name `AutoClass1` with comment "PlaceHolder Class Structure" indicates this is a Ghidra-generated placeholder, not a confirmed structure from debug symbols.
-
-### Speculative Retry Behavior
-
-Based on the presence of timing and counter fields, the Xbox *may* implement:
-1. Timeout detection using `kernel_tick_count` values
-2. Retry attempts tracked in `attempts_count_maybe`
-3. Exponential backoff using `delay_maybe`
-4. Frame retransmission from cached `nlb_frame_copy`
-
-## Appendix B: WPS-Based Speculation (Unverified)
-
-Based on the similarity to Wi-Fi Protected Setup (WPS) protocol, the Xbox protocol **could** support additional TLV tags beyond the confirmed 0x01-0x03.
-
-### Potential Additional TLV Tags
-
-Standard WPS includes these attributes that Xbox *might, could* theoretically support:
-
-| Xbox Tag | WPS Equivalent | Name              | Max Length | Description |
-|----------|----------------|-------------------|------------|-------------|
-| `0x04`?  | `0x100F`       | Encryption Type   | 1 byte     | AES vs TKIP cipher specification |
-| `0x05`?  | `0x1020`       | MAC Address       | 6 bytes    | Target AP BSSID/MAC address |
-| `0x06`?  | `0x1026`       | Network Index     | 1 byte     | Priority/preference for multiple networks |
-| `0x07`?  | `0x1028`       | Network Key Index | 1 byte     | Which WEP key to use (1-4) |
-
-### Speculative Encryption Type Values (Tag 0x04?)
-
-If implemented, would specify the cipher independently from authentication:
-
-| Value  | Name  | Description | Era |
-|--------|-------|-------------|-----|
-| `0x00` | None  | Open network (no encryption) | All |
-| `0x01` | WEP   | RC4-based encryption (insecure, deprecated) | 2001+ |
-| `0x02` | TKIP  | Temporal Key Integrity Protocol (used with WPA) | 2003+ |
-| `0x04` | AES   | Advanced Encryption Standard / CCMP (WPA2, post-2004) | 2005+ (Xbox 360) |
-
-### Extended Security Type Values (Tag 0x03)
-
-Additional values that *could* exist based on WPS specification :
-
-| Value  | Name              | Description
-|--------|-------------------|-------------
-| `0x04` | WPA2-Personal     | WPA2 with PSK (post-2004)
-| `0x08` | WPA-Enterprise    | 802.1X authentication with RADIUS
-| `0x10` | WPA2-Enterprise   | WPA2 with 802.1X authentication
-| `0x20` | WPA3-Personal     | Latest WPA3 standard (2018+)
+**Confirmed from NML_bin.c ethertype dispatcher (`net_demux_packet_to_protocol`):**
+```
+EtherType | Protocol            | Firmware Handler
+----------|---------------------|------------------------------------------
+0x0800    | IPv4 (UDP)          | Standard IP stack
+0x0806    | ARP                 | ARP_Process_Incoming_Packet
+0x886f    | NLB (XPP)           | xpp_TYPE_02_payload_construct
+0x888e    | EAPOL (IEEE 802.1X) | wlan_eapol_frame_dispatcher
+```
 
 ---
+
+### 1.1 Transport: NLB (EtherType 0x886f)
+
+The primary XPP management transport. Used by the majority of packet types.
+
+```
+Total size:   (14 Ethernet + 12 XPP Header + Payload + IEEE Padding) = N Bytes
+Body Size:    (12 XPP Header + Payload) / 4 = N DWORDs
+Checksum:     RFC 1071 over (Body Size * 4) bytes from XPP header start (checksum field = 0x0000)
+
+Size (Bytes) | Segment            | Description
+-------------|--------------------|-------------------------------------------------
+14 bytes     | Ethernet header    | dst MAC, src MAC, EtherType 0x886f
+12 bytes     | XPP Header         | Magic, version, body size, type, nonce, checksum
+Variable     | Payload            | Packet-specific data (see individual packet types)
+0-3 bytes    | DWORD padding      | Zeros to align payload to 4-byte boundary
+Variable     | IEEE 802.3 padding | Zeros to reach 60-byte minimum frame size (if needed)
+```
+
+#### Ethernet Header (14 bytes)
+```
+Offset | Size | Field           | Value
+-------|------|-----------------|------------------
+0      | 6    | Destination MAC | Target device MAC (broadcast FF:FF:FF:FF:FF:FF for HANDSHAKE_REQ)
+6      | 6    | Source MAC      | Sender MAC
+12     | 2    | EtherType       | 0x886f (NLB)
+```
+
+### 1.2 Xbox Peripheral Protocol Header (XPP header) (12 bytes)
+```
+Offset | Size | Field              | Value
+-------|------|--------------------|--------------------------------------------------
+0      | 4    | Magic Signature    | "XBOX" (0x58424f58)
+4      | 1    | Version byte 1     | 0x01 (static)
+5      | 1    | Version byte 2     | 0x01 (static)
+6      | 1    | Body Size (DWORDs) | (12 + Payload + padding) / 4
+7      | 1    | Packet Type        | Command ID (e.g. 0x01=HANDSHAKE_REQ, 0x09=BEACON)
+8      | 2    | XID (Nonce)        | Transaction ID — matched between request and response
+10     | 2    | Checksum           | RFC 1071 (calculated with this field = 0x0000)
+```
+
+Body Size counts from the start of the XPP header and covers header + payload + DWORD padding. It never counts IEEE 802.3 padding.
+
+```
+Examples:
+  Type 0x01: 16-byte payload  → (12 + 16) / 4  =  7 DWORDs = 0x07
+  Type 0x02: 256-byte payload → (12 + 256) / 4 = 67 DWORDs = 0x43
+  Type 0x09: 0-byte payload   → (12 + 0) / 4   =  3 DWORDs = 0x03
+```
+
+#### Payload Notes
+
+Payload structure varies by type. Only Type 0x02 (HANDSHAKE_RESPONSE) includes a 20-byte HMAC-SHA1 prepended at offset 0 before all other payload data. All other types carry their data directly with no HMAC.
+
+**Build order:**
+1. Pack payload data
+2. For Type 0x02 only: prepend 20-byte HMAC at offset 0
+3. Pad to 4-byte boundary with 0x00
+4. Calculate Body Size: `(12 + padded_payload) / 4`
+5. Write XPP header fields (magic, type, XID, body size)
+6. Calculate RFC 1071 checksum over `body_size * 4` bytes and write to offset 10
+7. Pad entire frame to 60-byte minimum with 0x00 (IEEE 802.3, not checksummed)
+
+---
+
+### 1.2 Transport: UDP Port 2002
+
+Used for discovery and echo. Standard IPv4/UDP over Ethernet. The XPP header structure is retained inside the UDP payload but the outer frame is standard IP, not NLB.
+
+**Used by**: Types 0x00 (ECHO), 0x08 (ASSOCIATE), 0x0D (DISCOVERY), 0x0E (DISCOVERY_RESPONSE)
+
+The UDP transport format is standard and not repeated in each packet section. Each affected packet type notes `Transport: UDP port 2002` in its header and documents only the payload.
+
+---
+
+### 1.3 Transport: EAPOL (EtherType 0x888e)
+
+Used exclusively by Type 0x11 (WPA_ASSOC / WPA_EXCHANGE). IEEE 802.1X EAPOL is the standard 802.11 WPA key exchange transport — the adapter's firmware routes it through `wlan_eapol_frame_dispatcher` rather than the XPP management handler.
+
+**This frame has no XPP magic signature, no Body Size DWORD count, and no RFC 1071 checksum.**
+
+```
+Size         | Field            | Value
+-------------|------------------|-----------------------------------------------
+6  bytes     | Destination MAC  | FF:FF:FF:FF:FF:FF (broadcast) or AP MAC (retry)
+6  bytes     | Source MAC       | Console MAC
+2  bytes     | EtherType        | 0x888e
+2  bytes     | Frame type word  | 0x6388 or 0x123c (WPA sub-protocol selector)
+1  byte      | Type marker      | 0x11 (constant)
+1  byte      | Sub-type         | Direction/state byte (0x09, 0x19, 0x01–0x04, 0x09)
+2  bytes     | Reserved         | 0x0000
+2  bytes     | Length           | Big-endian payload length
+2  bytes     | Reserved         | 0x0000
+Variable     | Payload          | Sub-TLVs: [tag:1][len:1][data:len]
+```
+
+The Xbox kernel function `net_dispatch_arp` is used to allocate the frame buffer. The `NETI`/`NETK` values passed to it are `ExAllocatePoolWithTag` pool debug tags — they identify the memory owner for kernel debugging and have no meaning on the wire.
+
+**See [Section 17](#17-type-0x11---wpa_assoc--wpa_exchange) for the full Type 0x11 packet specification.**
+
+
+### Related Information
+- [Checksum Calculation](#15. Checksum Calculation)
+- [HMAC Authentication](#16. hmac-sha1-authentication)
+- [HMAC Security model](#17. hmac security model)
+
+----
+
+### 15. Checksum Calculation (RFC 1071)
+**Purpose**:  The checksum ensures that integrity of the data contained within the XPP payload
+
+**Note**:
+1. If the integrity check fails, the MN-740 does not usually send a response and silently drops processing the packet.
+2. When calculating the checksum, the checksum field itself must be treated as 0x0000 during the calculation
+
+**Used in packets**: Types 0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0D, 0x0E
+
+----
+
+### 16. HMAC-SHA1 Authentication
+
+
+HMAC-SHA1 (RFC 2104)
+**Discovery Source**: Function `xpp_calculate_hmac_sha1` at address `0x8009b274`
+
+**key**    = g_XPP_HMAC_Key
+**input**  = 16-byte challenge + 6-byte g_ROUTER_MAC_ADDRESS + 117-byte g_XPP_HMAC_MASTER_KEY
+
+**Static Key**: : ``cb275ff238ab61dc8799fa01ad17745e``
+  Believed to decode to `"From isolation / Deliver me o Xbox, for I am the MN-740"` but I'm unable to find a method to decode it to this string,
+
+**Memory Address**: `0x800bf520` (ROM/Static Data section in firmware)
+
+**g_XPP_HMAC_MASTER_KEY**: `"From isolation / Deliver me o Xbox - / Through the ethernet
+                 Copyright (c) Microsoft Corporation. All Rights Reserved."`
+**Memory Address**: `0x800bc364` (ROM/Static Data section in firmware)
+
+**SEC_AUTH_COPYRIGHT_POEM**: `"Device is Xbox Compatible. Copyright (c) Microsoft Corporation. All Rights Reserved."`
+**Memory Address**: `0x800bc3dc` (ROM/Static Data section in firmware)
+
+
+**Purpose**: g_XPP_HMAC_MASTER_KEY is a static ROM string used as part of the HMAC input message. Combined with the Xbox's random nonce and the paired router MAC, it ensures only genuine MN-740 firmware — which has this string hardcoded in ROM — can produce a valid HMAC digest. g_XPP_HMAC_Key is the actual HMAC signing key.
+
+### Xbox Dashboard HMAC Verification (Xbox-side)
+**Discovery Source**: `my_calculate_handshake_hmac` decompiled from xonlinedash_xbe.c
+
+The decompiled code fully resolves the dashboard HMAC verification:
+
+```c
+undefined1 my_calculate_handshake_hmac(int param_1, int *param_2, undefined4 *param_3)
+{
+  // Build HMAC input buffer on stack:
+  // [0..15]   = 16-byte nonce copied from frame at param_1+0x2c
+  // [16..21]  = 6-byte adapter MAC from param_3 (source_mac from Ethernet frame)
+  // [22..139] = 118-byte master key string (local_a2[118])
+  //   = "From isolation / Deliver me o Xbox - / Through the ethernet\n
+  //      Copyright (c) Microsoft Corporation. All Rights Reserved."
+
+  // HMAC key (16 bytes, hardcoded):
+  local_18..local_9 = { 0xcb, 0x27, 0x5f, 0xf2, 0x38, 0xab, 0x61, 0xdc,
+                         0x87, 0x99, 0xfa, 0x01, 0xad, 0x17, 0x74, 0x5e };
+
+  XcHMAC(&local_18, 0x10,    // key = 16-byte static key (same as g_XPP_HMAC_Key)
+         &local_b8, 0x8b,    // input = 139 bytes (16 nonce + 6 MAC + 117 master key)
+         0, 0,               // no extra data
+         local_2c);          // output = 20-byte SHA1 digest into local_2c[5]
+
+  // Compare first 20 bytes (5 DWORDs) of digest against frame payload:
+  for (iVar3 = 5; iVar3 != 0; iVar3--) {
+    if (*piVar5 != *param_2) return 0;  // mismatch
+  }
+  return 1;  // all 5 DWORDs match
+}
+```
+
+**Key findings confirmed by decompile:**
+- The HMAC key is **identical** to `g_XPP_HMAC_Key` — `cb275ff238ab61dc8799fa01ad17745e` — the same static ROM key used by the adapter. Previous v17 speculation about a dynamically derived key was **incorrect**.
+- The input is **139 bytes**: 16-byte nonce + 6-byte adapter source MAC + 117-byte master key string. This matches the adapter firmware exactly.
+- The comparison is **all 20 bytes** (5 DWORDs loop) — **not** truncated to 16 bytes as previously speculated in v17. The full SHA1 digest is compared.
+- `XcHMAC` is an Xbox kernel crypto primitive (`xboxkrnl.exe` import).
+
+----
+
+
+## 2. Type 0x00 - ECHO
+**Direction**: Xbox ↔ Adapter (bidirectional)  
+**Transport**: UDP port 2002  
+**HMAC Required**: No
+
+### Brief Description
+Simple packet reflector for latency testing and network validation.
+
+### Packet Format
+```
+Total size:  (14 Ethernet + 12 Header + Payload + padding) = N Bytes
+Body Size:   (12 Header + Payload + padding) / 4 = N DWORDS
+
+Size (Bytes) | Segment          | Description
+-------------|------------------|--------------------------------
+14 bytes     | Ethernet header  | Standard Ethernet frame header
+12 bytes     | XPP Header       | Type 0x00, body size = Variable
+Variable     | Payload          | Arbitrary data to be reflected back
+0-3 bytes    | Null/ Padding    | padding to ensure total Body is DWORD aligned
+```
+
+### Behavior
+- Adapter echoes exact same packet back to sender
+- Used for ping/latency measurement
+- No processing of payload required
+
+### Implementation Notes
+**UDP Discovery Thread Required**: The adapter must run a background UDP listener on port 2002 to handle echo requests. See [UDP Discovery Implementation](#udp-discovery-implementation) for complete code.
+
+----
+
+# 3. Type 0x01 - HANDSHAKE_REQUEST
+**Direction**: Xbox → Adapter  
+**Transport**: Ethernet 0x886f  
+**HMAC Required**: No
+
+### Brief Description
+Initiates authentication session with random challenge.
+
+### Packet Format
+```
+Total size: (14 Ethernet + 12 XPP Header + 16 Payload) =42 bytes
+Body Size:  (12 xpp header +16 Payload) / 4 = 0x07 DWORDs
+
+Size (Bytes) | Segment          | Description
+-------------|------------------|--------------------------------
+14 bytes     | Ethernet header  | Standard header
+12 bytes     | XPP Header       | Type 0x01, body size = 0x07 DWORDs
+16 bytes     | Payload          | Randomly generated 128-bit challenge nonce
+```
+
+
+### Example
+```
+58 42 4f 58 01 01 07 01 ed c6 66 9a  <-- 12-byte Header ( Type: 0x01 Body Size: 0x07)
+12 34 56 78 9a bc de f0 11 22 33 44  <-- 16-byte Challenge Start
+55 66 77 88                          <-- 16-byte Challenge End
+```
+
+### Related Information
+- [Type 0x02 Response](#4-type-0x02---handshake_response)
+
+----
+
+## 4. Type 0x02 - HANDSHAKE_RESPONSE
+**Direction**: Adapter → Xbox  
+**Transport**: Ethernet 0x886f  
+**HMAC Required**: Yes challenge reply
+
+### Brief Description
+Authenticates adapter and provides current wireless status (BSSID, SSID, IP, connection state)
+
+### Packet Format
+```
+Total size: (14 Ethernet + 12 XPP Header + 252 fixed Payload + 4 trailer payload) = 282 bytes
+Body Size:  (12 XPP + 252 Payload + 4 trailer payload) / 4 = 0x43 DWORDs
+
+Size         | segment          | Description
+-------------|------------------|--------------------------------
+14 bytes     | Ethernet         | Standard Ethernet frame header
+12 bytes     | XPP Header       | Type 0x02, body size = 0x43 DWORDs
+252 bytes    | Fixed payload    | fixed buffer
+4 bytes      | Trailer payload  | Trailer OpMode + LinkState + 00 00
+```
+### Fixed Payload Structure (256 bytes)
+```
+Offset | Size     | Firmware source                        | Field Name / Description / Logic
+-------|----------|----------------------------------------|--------------------------------------------------
+0      | 20 bytes | xpp_calculate_hmac_sha1()              | HMAC-SHA1 (RFC 2104) key = g_XPP_HMAC_Key
+                                                           | input = 16-byte challenge + 6-byte g_ROUTER_MAC_ADDRESS
+                                                           | + 117-byte g_XPP_HMAC_MASTER_KEY (139 bytes total)
+20     | 84 bytes | util_strncpy(SEC_AUTH_COPYRIGHT_POEM)  | "Device is Xbox Compatible. Copyright (c)
+       |          |                                        |  Microsoft Corporation. All Rights Reserved."
+104    | 32 bytes | util_strncpy(s_Xbox_Adapter_MN740_Name)| "Xbox Wireless Adapter (MN-740)" null-padded
+136    | 32 bytes | util_strncpy(DAT_Firmware_Build_Date)  | "1.0.2.26 Boot: 1.3.0.06" null-padded
+168    | 6 bytes  | get_wireless_bssid_ptr() or memset 0   | BSSID of connected AP, or 00:00:00:00:00:00
+174    | 1 byte   | get_WPA_security_capability_STUB()     | ⚠ HARDCODED STUB — always 0x06
+       |          |                                        | Dashboard stores to AutoClass1+0xd90 raw,
+       |          |                                        | then bit-extracts: &0x02→0xd68, &0x04→0xd6c, &0x10→0xd70, &0x20→0xd74
+       |          |                                        | These are WPA security capability flags (see WPA capability table below).
+       |          |                                        | Wire constant 0x06 = bits 1+2 set = WPA_TKIP + WPA_CCMP supported (no WPA2).
+175    | 1 byte   | get_WPA_cipher_capability_STUB()       | ⚠ HARDCODED STUB — always 0x07
+       |          |                                        | Dashboard stores to AutoClass1+0xd91 raw,
+       |          |                                        | then bit-extracts: &0x01→0xd78, &0x02→0xd7c, &0x04→0xd80,
+       |          |                                        |                    &0x08→0xd84, &0x10→0xd88, &0x20→0xd8c
+       |          |                                        | These are WPA cipher suite sub-capability flags (see WPA capability table below).
+       |          |                                        | Wire constant 0x07 = bits 0+1+2 set = NONE+WEP/TKIP+TKIP supported.
+       |          |                                        | field_0xd80 (bit 2, &0x04) is consumed by FUN_000a2a24 as "WPA TKIP" capability.
+176    | 4 bytes  | (SUPPORTED CHANNELS BITMASKn/stub)     | ⚠ HARDCODED STUB — set depending on regon set in the adaptor
+                                                           | SUPPORTED CHANNELS BITMASK 0x00000FFE each set bit = that channel number is supported.
+                                                           | 0x00000FFE → bits 1–11 = channels 1–11 (standard 802.11b/g North America). Bit 0 or bit >14 set → packet rejected entirely.
+180    | 28 bytes | XPP_Fill_IP_Telemetry_Block_STUB()     | ⚠ STUB — 28 bytes, writes one 0x00, rest uninitialised. Not used by dashboard.
+208    | 1 byte   | XPP_Get_Link_Status_Summary_STUB()     | ⚠ HARDCODED STUB — always 0x05
+       |          |                                        | Dashboard uses as radio/mode capability bitmask.
+       |          |                                        | Stored to: &0x01→AutoClass1+0xd60, &0x02→0xd5c, &0x04→0xd64
+       |          |                                        | Dashboard validates: (byte & 0xf8) == 0 (upper 5 bits MUST be zero).
+       |          |                                        | Wire constant 0x05 = bit0 + bit2 = 0xd60 + 0xd64 set.
+       |          |                                        | Interpretation: bit0=11b support, bit2=ad-hoc capable (both true for MN-740).
+209    | 1 byte   | g_NET_InterfaceStatus / DHCP state     | NEWLY CONFIRMED (v19): validated < 3 by dashboard (not < 4 as previously noted).
+       |          |                                        | 0x00=no DHCP/searching, 0x01=DHCP acquired, 0x02=interface manually enabled.
+       |          |                                        | Stored to AutoClass1+0xd98. Wire constant 0x00 at handshake time.
+210    | 4 bytes  | memcpy(&CFG_Device_IP)                 | Current IP address (big-endian). Stored to AutoClass1+0xd94.
+       |          |                                        | If non-zero, dashboard triggers FUN_001337a1() (IP validity check).
+214    | 1 byte   | wlan_is_radio_active()                 | Radio active flag: 0x00=radio off, 0x01=radio on. Validated < 2.
+       |          |                                        | Stored to AutoClass1+0xd92 (field_0xd92). Wire-verified 0x01.
+215    | 1 byte   | XPP_Check_Auth_Status()                | Auth/association status. Validated < 4.
+       |          |                                        | Stored to AutoClass1+0x3c (field22_0x3c — NOT is_connected_maybe).
+       |          |                                        | 0x02=open/idle, 0x03=WEP association in progress. Wire-verified.
+216    | 1 byte   | wlan_is_infra_or_adhoc()               | Network mode: 0x01=infrastructure, 0x00=ad-hoc. Validated < 2.
+       |          |                                        | Stored to AutoClass1+0xe2c. Wire-verified.
+217    | 1 byte   | XPP_Get_Channel_Or_Fallback()          | Channel number (1–14). Validated < 201 (0xc9).
+       |          |                                        | Stored to AutoClass1+0xe2d. Wire-verified (ch9=0x09, ch11=0x0b).
+218    | 1 byte   | wlan_get_encryption_type()             | WEP enabled: 0x00=open, 0x02=WEP active. Validated < 3.
+       |          |                                        | Stored to AutoClass1+0xe2f. Wire-verified.
+219    | 1 byte   | get_current_ssid_length()              | SSID length. Validated < 0x21 (max 32).
+       |          |                                        | Used to bound FUN_000a3dad() SSID copy. Wire-verified.
+220    | 32 bytes | hw_get_ssid_string()                   | Raw SSID string, null-padded to 32 bytes.
+252    | 1 byte   | hw_ver_major                           | Hardware version major byte. Stored to AutoClass1+0xe2e via FUN_000a34c8().
+253    | 1 byte   | hw_ver_minor                           | Hardware version minor byte. Also consumed by FUN_000a34c8().
+254    | 2 bytes  | (unwritten)                            | Padding/reserved, always 0x00 0x00.
+```
+
+### Type 0x02 Payload — WPA Capability Byte Decoding (Bytes 174–175)
+**Source**: `my_handle_nlb_handshake_response` / `FUN_000a2a24` decompiled from xonlinedash_xbe.c
+
+The adapter firmware produces stub constants here (0x06, 0x07), but the dashboard decodes them as WPA capability bitfields. The MN-740 hardware is pre-WPA2, and the constant values indicate which cipher suites the hardware supports in principle.
+
+```
+Byte 174 (iVar2+0xc8) — WPA security capability flags
+  Bit | Mask | AutoClass1 field | Wire value | Meaning
+  ----|------|-----------------|------------|------------------------------
+  1   | 0x02 | 0xd68           | SET (0x06) | WPA_TKIP cipher supported
+  2   | 0x04 | 0xd6c           | SET (0x06) | WPA_CCMP/AES cipher supported
+  4   | 0x10 | 0xd70           | CLEAR      | WPA2/RSNA capable (not supported by MN-740)
+  5   | 0x20 | 0xd74           | CLEAR      | WPA2 enterprise capable (not supported)
+
+Byte 175 (iVar2+0xc9) — WPA cipher suite sub-capability flags
+  Bit | Mask | AutoClass1 field | Wire value | Meaning
+  ----|------|-----------------|------------|------------------------------
+  0   | 0x01 | 0xd78           | SET (0x07) | NONE/open cipher mode
+  1   | 0x02 | 0xd7c           | SET (0x07) | WEP/TKIP cipher mode
+  2   | 0x04 | 0xd80           | SET (0x07) | TKIP cipher mode (used by FUN_000a2a24 as WPA_TKIP flag)
+  3   | 0x08 | 0xd84           | CLEAR      | CCMP/AES cipher mode
+  4   | 0x10 | 0xd88           | CLEAR      | WPA2 TKIP
+  5   | 0x20 | 0xd8c           | CLEAR      | WPA2 CCMP/AES
+```
+
+**FUN_000a2a24** uses `AutoClass1+0xd70` (byte174 bit4 = WPA2 capable) and `AutoClass1+0xd80` (byte175 bit2 = TKIP) together with wire auth/channel bytes to compute the final `AutoClass1+0xe2e` (resolved security mode). For the MN-740, WPA2 is always 0 so this path falls to the WEP/open code.
+
+---
+
+### ⚠️ CRITICAL: WPA Capability Stubs Control the Dashboard UI — WPA is Gated by Adapter Response
+
+This is the most important consequence of the HANDSHAKE_RESP capability byte stubs.
+
+**The dashboard does NOT show a WPA PSK option unless the adapter reports WPA capability.**
+
+The complete unlock chain is:
+
+```
+HANDSHAKE_RESP byte 174 (iVar2+0xc8)
+    bit 0x10 → AutoClass1+0xd70  ← "WPA1/RSN capable" flag
+    bit 0x20 → AutoClass1+0xd74  ← "WPA2 enterprise capable" flag
+
+HANDSHAKE_RESP byte 175 (iVar2+0xc9)
+    bit 0x01 → AutoClass1+0xd78  ← "no security" menu option gating
+    bit 0x02 → AutoClass1+0xd7c  ← "WEP-64" menu option gating
+    bit 0x04 → AutoClass1+0xd80  ← "WEP-128" menu option gating
+
+Security mode selection UI (FUN_0007881c / FUN_000a2fb1):
+    field_0xd78 != 0  → show "No Security" option
+    field_0xd7c != 0  → show "WEP-64" option
+    field_0xd80 != 0  → show "WEP-128" option
+    (field_0xd70 != 0 OR field_0xd74 != 0)  → show "WPA PSK" option
+```
+
+**With stock firmware stub values:**
+- Byte 174 = `0x06` → bits 0x10 and 0x20 are CLEAR → `0xd70 = 0`, `0xd74 = 0` → WPA PSK option **never shown**
+- Byte 175 = `0x07` → bits 0x01, 0x02, 0x04 SET → No Security, WEP-64, WEP-128 options **all shown**
+
+**To enable the WPA PSK menu option** without modifying the Xbox, the adapter must report
+byte 174 with bit `0x10` set (i.e., `0x16` instead of `0x06`) OR bit `0x20` set.
+
+```c
+// xonlinedash_xbe.c — FUN_0007881c (security type selection menu builder)
+// iVar1 = (field_0xf5c == 1) ? field_0xd70 : field_0xd74
+// If iVar1 != 0: add WPA_PSK to the menu
+if (iVar1 != 0) {
+    puVar2[param_5] = FUN_000906ef(L"WIRELESS_SETTINGS_SELECT_SECURITY_TYPE_WPA_PSK");
+    puVar4[param_5] = 3;  // security type enum value 3 = WPA
+}
+```
+
+**field_0xf5c** (operating mode: `0x01` = infrastructure, `0x00` = ad-hoc) controls which WPA
+capability field is checked: infrastructure mode checks `0xd70`, ad-hoc mode checks `0xd74`.
+
+---
+
+### Security Type Enum (AutoClass1+0xf5e)
+
+The dashboard tracks the current security selection in a single byte at `AutoClass1+0xf5e`.
+This is set by user selection and also used by `FUN_000a364e` to decide which tags to emit.
+
+```
+Value | Function              | Security Mode         | Tag(s) Emitted by FUN_000a364e
+------|-----------------------|-----------------------|--------------------------------
+0x01  | FUN_000a2dea()        | No security / Open    | None (no key tags)
+0x02  | FUN_000a2e12()        | WEP-64                | Tags 0x0a–0x0d (WEP-40 key slots)
+0x03  | FUN_000a2e3a()        | WEP-128               | Tag 0x0f (WEP-128 ASCII) or 0x0f + 0x14 (hex)
+0x04  | FUN_000a2e62()        | WPA-PSK               | Tag 0x10 (PMK) or Tag 0x12 (passphrase)
+```
+
+Additionally `field_0xf5e == 0x04` has a guard: `FUN_000a2f0f()` will **downgrade WPA to open**
+if WPA2 enterprise capability is absent (`field_0xd74 == 0`). This is called when the
+operating mode is set to ad-hoc — ad-hoc WPA is not supported.
+
+---
+
+### WPA Connection State Machine (SubStates 0x11–0x15)
+
+When the user selects WPA PSK security, the connection sub-state machine
+(`AutoClass1+0x8c8`) enters a dedicated WPA authentication flow separate from the
+WEP/open path. The full state sequence confirmed from `xpp_fsm_state_dispatch` disassembly:
+
+```
+State | Function Called                    | Action
+------|------------------------------------|-------------------------------------------------------------
+0x11  | xpp_build_wpa_assoc_request()      | Send WPA_ASSOC_REQ — first attempt, SSID sub-TLV to broadcast
+0x12  | xpp_build_wpa_assoc_request()      | Retry path — same builder, falls through from 0x11 case
+0x13  | xpp_fsm_wpa_credential_exchange()  | Send IP negotiation sub-TLV set (frame_type 0x21c0)
+0x14  | xpp_fsm_retransmit()               | Retransmit last credential-exchange packet
+0x15  | xpp_fsm_wpa_credential_exchange()  | Second credential exchange pass (frame_type 0x2180)
+0x16  | xpp_fsm_reset_cleanup()            | WPA failure terminal — resets all state
+```
+
+**State 0x11 vs 0x12**: The check at entry to 0x11 `if (wpa_assoc_retry == 0 && ++retry_count > retry_limit)` causes
+state 0x11 to call `xpp_fsm_fatal_error(0xc0000000)` on retry exhaustion. State 0x12 retries
+unconditionally (no retry guard). The retry limit is `AutoClass1+0x25`.
+
+**Critical**: The FSM does **not** advance from 0x11/0x12 based on a response packet.
+There is no response packet for WPA_ASSOC_REQ. The adapter is expected to silently begin
+802.11 association and then drive the console forward by sending type 0x11 frames
+of its own. The console advances to 0x13 only when `FUN_0013e9c5` receives a valid
+sub-type 0x01 frame from the adapter with `local_10[0] != 0` (active negotiation flag set).
+
+---
+
+## 5. Type 0x03 - NETWORKS_LIST_REQUEST
+**Direction**: Xbox → Adapter  
+**Transport**: Ethernet 0x886f  
+**HMAC Required**: No
+
+### Brief Description
+Triggers the adapter to perform a site survey (Wi-Fi Scan). This is a "blind" request with no parameters; the adapter scans all available channels and prepares the results for the subsequent Type 0x04 response.
+
+**Note**:
+If a scan is already in progress, any requests during a scan are silently dropped and no response is sent.
+
+### Packet Format
+```
+Total size: (14 Ethernet + 12 Header) = 26 bytes
+Body size:  (12 xpp header) / 4 = 0x03 DWORDS
+
+Size (Bytes) | Segment          | Description
+-------------|------------------|--------------------------------
+14 bytes     | Ethernet header  | Standard header
+12 bytes     | XPP Header       | Type 0x03, body size = 0x03 DWORDS
+```
+### Behavior
+- Adapter triggers async Wi-Fi scan
+- Scan takes 50-900ms depending on channel count
+- Response sent when scan completes
+
+### Tags
+None (payload ignored)
+
+### Related Information
+- [Type 0x04 Response](#6-type-0x04---networks_list_response)
+
+----
+
+## 6. Type 0x04 - NETWORKS_LIST_RESPONSE
+**Direction**: Adapter → Xbox  
+**Transport**: Ethernet 0x886f  
+**HMAC Required**: No
+
+### Brief Description
+Returns discovered Wi-Fi networks in a big payload.
+
+**Network slot sizes**:
+Each the network slots is a string of 53 bytes of sequential meaningful data with padding at
+the end of each slot to make a stride of 61 bytes from the start of one slot to the next.
+
+### how to evoke
+**Triggered by**: Type 0x03
+
+### Packet Format
+```
+Total size: (14 Ethernet + 12 Header + 1 Count + N×61 Slots + Padding) = N Bytes
+Body size:  (12 header + 1 network count  + (NC * 61) + Padding) / 4 = N DWORDS
+
+Size (Bytes) | Segment            | Description
+-------------|--------------------|--------------------------------
+14 bytes     | Ethernet header    | Standard header
+12 bytes     | XPP Header         | Type 0x04, body size = variable DWORDs
+1 byte       | Network count (NC) | Number of SSIDs found
+N × 61 bytes | Network slots      | Fixed-width blocks containing SSID and Signal
+0-3 bytes    | Alignment Padding  | Nulls to ensure the total body is DWORD aligned
+```
+
+### Payload Structure example:
+```
+Offset | Size  | Field
+-------|-------|-------
+0      | 61    | Network slot 1
+61     | 61    | Network slot 2
+------------------------------
+info omitted  for slots 3-14
+-----------------------------
+915    | 61    | network slot 15
+931    | 61    | network slot 16
+```
+
+### Network Slot Structure (61 bytes each)
+```
+Offset | Size | Field              | Description
+-------|------|--------------------|------------------
+0      | 6    | BSSID              | The AP's MAC Address.
+6      | 1    | Privacy flags      | 0x01 means the AP has the 802.11 Privacy bit set (WEP/WPA), 0x00 means open.
+7      | 1    | SSID Length        | 0-32 bytes.
+8      | 32   | SSID String        | The network name, null-padded.
+40     | 1    | Security Type      | Ernum Open WEP WPA / WPA2. see security type
+41     | 1    | Network mode       | 0x01=Infrastructure, 0x06=Ad-Hoc, 0x09=Infrastructure (observed on some APs — exact distinction from 0x01 unknown)
+42     | 1    | Security Status    | bitmask of cipher info (TKIP/AES). see security status
+43     | 1    | Channel            | Ap Channel
+44     | 1    | Signal/RSSI        | Raw signal strength scale.
+45     | 12   | Supported Rates    | Handshake rates (6, 9, 12, 18, 24, 36, 48, 54 Mbps).
+53     | 4    | Alignment          | Zeros to pad the slot to the stride of 61-bytes.
+```
+**Note**: byte 44 signal RSSI has custom scaling see [Signal strength / link quality scaling)](Signal strength / link quality scaling)
+
+**Factory Reset Default Network**:
+When a factory reset is performed the adapter defaults to SSID "mshome", channel 1, infrastructure mode, IP 192.168.2.252/24, rate capability 0x0B (11 Mbps), no security, with all WEP keys cleared.
+
+**⚠ Stale cache behaviour**: If the current scan returns zero networks, the adapter falls back to the previous scan's results and returns those instead. The adapter never sends an empty network list — it always returns the last successful scan.
+
+```
+1024 - 14 (Ethernet Header)} - 4 (FCS Checksum)} = 1006 bytes of available payload.
+(1006 - 27) / 61 = 16 Slots
+```
+
+**note**: Alternative implementation guideline
+If implementing this in alternative firmware the maximum amount of slots is 23 to keep within a standard Ethernet
+frame, but it is unknown how many slots the Xbox can handle 16 is the limit in the firmware of the adaptor.
+```
+1500 - 12 - 1 = 1487 bytes/ 61 = 25 Slots
+```
+
+### Security type enumerated field (Byte 40)
+```
+⚠ Wire-verified: This byte is ALWAYS 0x02 in every adapter response regardless of network type
+(open, WEP, WPA, WPA2, infrastructure, ad-hoc). The firmware writes 0x02 unconditionally.
+.
+
+ Value (Hex) | Wire observation
+-------------|--------------------------------------------------
+ 0x02        | Always — firmware hardcodes this value for all network types
+```
+
+### Security status Bitfield (Byte 42)
+```
+⚠ Wire-verified across all real adapter logs (lysten_* captures):
+
+ Value | Wire observation                       | Known networks with this value
+-------|----------------------------------------|-------------------------------
+ 0x02  | 802.11 Privacy bit NOT set in beacon   | All open networks (OpenWrt*), WEP-open auth networks
+ 0x04  | 802.11 Privacy bit SET in beacon       | WPA, WPA2, WEP shared-key auth networks
+```
+**Important**: The adapter faithfully copies the 802.11 Privacy bit from the AP beacon into this byte.
+It does NOT make a higher-level judgement about the security protocol in use.
+- WEP open-auth networks may report 0x02 if the AP beacon has Privacy=0 (AP-dependent).
+- OWE (Opportunistic Wireless Encryption) networks report 0x04 despite being open-auth.
+- Use this byte only to determine if the AP beacon advertises encryption — not what kind.
+
+**Privacy byte (Byte 6) is unreliable**: Wire captures show 0x01 on virtually all networks
+including genuinely open ones. Do not use Byte 6 as a security indicator.
+```
+ Bit | Hex  | Original Ghidra Label | Description (firmware constant names are inferred)
+-----|------|-----------------------|------------------------------------------------------
+ 0   | 0x01 | WLAN_FLAG_PRIVACY     | (unreliable — set on almost all networks including open)
+ 1   | 0x02 | WLAN_FLAG_OPEN        | 802.11 Privacy bit not set in beacon
+ 2   | 0x04 | WLAN_FLAG_TKIP        | 802.11 Privacy bit set in beacon (WEP/WPA/WPA2)
+ 3   | 0x08 | WLAN_FLAG_AES         | Reserved/Unused (not seen on wire)
+ 4-7 | ---- | WLAN_FLAG_RSVD        | Reserved/Unused bits
+```
+
+### Hidden SSID Handling
+**Mechanism**: There is no specific "hidden flag" byte in the packet.
+**Firmware Logic**: The adapter sets **SSID Length = 0** if the broadcast bit is disabled in the AP's beacon.
+**Xbox Behavior**:
+
+- On first discovery, Xbox ignores hidden networks (length 0)
+- When user manually enters SSID in Dashboard, Xbox sends Type 0x03 probe for that specific string
+- Once adapter returns BSSID for that SSID, Xbox "pins" them together in RAM
+- Dashboard displays "[Hidden Network]" for length 0 entries
+
+### Real Example
+```
+[Network Slot 0 - Kids2.4g] - 61 bytes total
+
+Offset | Hex Data                                   | Field
+-------|--------------------------------------------|-------
+0-5    | b6 b0 24 59 b8 0a                          | BSSID
+6      | 01                                         | Privacy flags
+7      | 08                                         | SSID length (8)
+8-15   | 4b 69 64 73 32 2e 34 67                    | "Kids2.4g"
+16-39  | 00 00 00 00 00 00 00 00 00 00 00 00 00 00  | SSID padding
+       | 00 00 00 00 00 00 00 00 00 00              |
+40     | 02                                         | Security type Open (0x02)
+41     | 01                                         | network mode Infrastructure (Access Point)
+42     | 02                                         | Security Flags: Basic/No Encryption
+43     | 01                                         | channel 01
+44     | d9                                         | Signal: 0xd9 (217 = 85%)
+45-52  | 0c 12 18 24 30 48 60 6c                    | handshake Rates: 6,9,12,18,24,36,48,54 Mbps
+53-60  | 00 00 00 00 00 00 00 00                    | Reserved/Padding
+
+Total: 61 bytes (0x3D)
+```
+
+### Related Information
+- [Type 0x03 Request](#5-type-0x03---networks_list_request)
+- [Security Types Reference](#security-types-reference)
+- [Signal Strength Conversion](#signal-strength-conversion)
+
+----
+
+## 7. Type 0x05 - ADAPTER_INFO_REQUEST
+**Direction**: Xbox → Adapter  
+**Transport**: Ethernet 0x886f  
+**HMAC Required**: No
+
+
+### Brief Description
+request a variable array of tags this is purely a request to read TLV formatted tags from the MN-740
+
+#### - ADAPTER_INFO_REQUEST
+```
+Total size: (14 Ethernet + XPP header + 1 tag count + tag payload + Padding) = N Bytes
+Body size:  (12 XPP Header + 1 tag count + tag payload + padding) / 4 = N DWORDS
+
+ Size (Bytes) | Segment            | Description
+--------------|--------------------|--------------------------------
+14 bytes      | Ethernet header    | Standard header
+12 bytes      | XPP Header         | Type: 0x05 , body size variable
+1  byte       | TLV tag count      | Number of [Tag][Length Hint] pairs in the following tag block
+Variable      | tag payload        | Array of [Tag][Length Hint] pairs — see Table A TLV Tags
+Variable      | NULL Padding       | Zeros to ensure the body is DWORD aligned
+```
+
+### Tag Encoding Format
+TLV tags are just string in a array of bytes one after the other and are aligned to 4 byte boundary with padding.
+
+All TLV tags use: `[1 byte Tag] [1 byte Length Hint]`
+
+**Length Hint**: Advisory field designed to tell the adapter how many bytes to reserve for the tag response.
+The MN-740 firmware reads but ignores the value entirely — all response lengths are hardcoded internally.
+The hint values sent by Xbox do match the actual response sizes for fixed-width tags, suggesting this was an intended pre-allocation mechanism that was never implemented.
+It has the nice effect that it makes the request and response data payload line up with each other, when they could of omitted this field entirely in the request.
+
+### How to perform a bulk tag request
+To query multiple TLV tags simultaneously, the host can send a Type 0x05 request.
+The request starts with a numerical value representing the number of TLV [Tag][Length Hint] pairs requested in the payload.
+The payload is a dense Array of [Tag][Length Hint] pairs one after the other.
+The adapter parses this array sequentially and generates a Type 0x06
+response containing the full TLV data for every valid ID found in the request array.
+Null bytes (0x00) are used only as trailing padding to maintain 32-bit alignment and are ignored by the adapter's parser."
+
+## Example payload structure
+Ask for tags 0x01 0x04 and 0x11
+```
+03 01 04 04 01 11 01 00
+|  ↑  ↑  ↑  ↑  ↑  ↑  ↑  
+|  |  |  |  |  |  |  └─── alignment padding to next 4 Byte boundary (1 bytes)
+|  |  |  |  |  |  └─  third requested length hint  (1 byte)
+|  |  |  |  |  └────  third requested tag 0x11 (encryption type)
+|  |  |  |  └─ second requested length hint (1 byte)
+|  |  |  └──── second requested tag 0x04 (wireless mode), (1 byte)
+|  |  └─── first requested length hint (4 bytes)
+|  └────── first requested tag 0x01 (IP address)
+└────── Number of [tag] [tag hint] pairs (3)
+```
+
+**Note**:
+If you request a really large array of tags that exceeds the buffer length it will trigger a malloc_error
+and silently drop the packet issuing a NUK NUK error response in the serial console.
+
+## Table A TLV Tags
+**Note**: See type 0x06 Table A TLV Tags for a list of tags and responses.
+
+
+### Related Information
+- [Type 0x06 adapter Info Response](#8-type-0x06---adapter_info_response)
+
+---
+
+## 8. Type 0x06 - ADAPTER_INFO_RESPONSE
+**Direction**: Adapter → Xbox  
+**Transport**: Ethernet 0x886f  
+**HMAC Required**: No
+
+### Brief Description
+response to a type 0x05 request to read TLV formatted tags from the MN-740.
+
+**Triggered by**: Type 0x05 request
+
+**DYNAMIC TLV TAG POSITIONING**. Tags are only included if they have valid data. You **MUST** parse as a TLV stream, NOT fixed offsets!
+**Example**: If adapter has no IP assigned, Tag 0x01 is skipped entirely from the response
+
+### Packet Format (Tag Response)
+```
+Total bytes: (14 Ethernet + 12 xpp Header + 2 artefact + Payload + padding) = N bytes
+Body size:   (12 xpp header + 2 artefact + payload + padding) / 4 = N DWORDS
+
+Size (Bytes) | Segment           | Description
+-------------|-------------------|--------------------------------
+14 bytes     | Ethernet header   | Standard Header
+12 bytes     | XPP Header        | Type 0x06, body size = variable
+1  Byte      | Firmware artefact | Always 0x00 side effect of firmware DWORD zero write at XPP+12, skip before parsing TLV stream
+1 Byte       | request count     | Echo of the Type 0x05 request count byte (e.g., 0x09 if 9 tags were requested)
+variable     | Payload           | Array of [Tag][Length] pairs
+0 - 3 bytes  | Null/Padding      | padding to align to 4 byte boundary
+```
+
+
+### Tag Encoding Format
+TLV tags are just string in a array of bytes one after the other and are aligned to 4 byte boundary with padding.
+
+All TLV tags use: `[1 byte Tag] [1 byte Length] [N bytes Value]`
+
+## Example payload structure
+Response for tags 0x01 0x04 and 0x11 from prior request example in type 0x05 section
+```
+00 00 04       04 01 00 11 01 01
+↑  ↑  ↑  ↑  ↑  ↑  ↑  ↑  ↑  ↑  ↑  
+|  |  |  |  |  |  |  |  |  |  └──second response data (1 byte, value 0x01)
+|  |  |  |  |  |  |  |  |  └─────second response length (1 byte)
+|  |  |  |  |  |  |  |  └─────── second response tag 0x11 (radio mode), (1 byte)
+|  |  |  |  |  |  |  └─ first response data (1 byte, value 0x00)
+|  |  |  |  |  |  └──── first response length (1 byte)
+|  |  |  |  |  └─────── first response tag 0x04 (wireless mode), (1 byte)
+|  |  |  |  └─── first requested tag expected data (4 bytes) MISSING !!
+|  |  |  └─── expected first requested tag length (4 bytes) MISSING !!
+|  |  └────── expected first requested tag 0x01 (IP address) MISSING !!!
+|  └────── echo of tag count from type 0x05
+└────── Firmware artefact
+```
+**Example feature**:
+If you look in the response example in type 0x05 adapter it requested for tags 0x01 0x04 and 0x11.
+This response is totally void of the first requested tag IP address!!!
+This response shows the adaptive nature of the TLV tag system and the sliding tags.
+In this response example does not have an IP address at the time of the tag request so the data was skipped and the second tag filled it place.
+
+## Table A TLV Tags
+**Note**: This table lists tags available in Type 0x05 for request and type 0x06 for response.
+```
+ Tag  | Name                  | Size  | Condition       | Description
+------|-----------------------|-------|-----------------|-------------
+0x01  | IP Address            |  4    |   IP assigned   | Current adapter IP (Big-Endian)
+0x02  | Connection State      |  1    |   Always        | 0x00=no DHCP yet, 0x01=DHCP acquired (state 0x52), 0x02=interface manually enabled. See Tag 0x02 detail below.
+0x03  | Admin Identity        |  Var  |   Always        | Read-back of G_XPP_Admin_Identity (max 17 bytes) Adapter write counterpart is Table B Tag 0x03.
+0x04  | Radio Active Flag     |  1    |   Always        | wlan_is_radio_active(): 0x00=radio off, 0x01=radio on/b-only, 0x02=radio on/b+g. Wire
+                                                        | verified:lysten_setmac_host_ppoe_and_connect_to_live.log returns 0x01 (b-only) on an adapter connected to SSID 'open_ch9_bg'
+                                                        | confirming 0x01 means radio active in 802.11b mode, not merely "on". (Write path via Tag 0x04 in Type 0x07 sets operating
+                                                        | mode — different semantic from this read.)
+0x05  | radio channel         |  1    |   Always        | XPP_Get_Channel_Or_Fallback(): returns live radio channel (1–14) via wlan_freq_to_channel_number() when authenticated, or
+                                                        | g_CFG_Max_Channel (saved configured channel) when not authenticated. Wire-verified: channel 3 = 0x03 observed in
+                                                        | lysten_open_connect_with_wan_ch_3_new.log.
+0x06  | BSSID                 |  6    |   If connected  | MAC address of the current AP (BSSID). Returns 00:00:00:00:00:00 when not associated with any AP (e.g. router is off, adapter
+                                                        | is scanning, or profile configured but not yet connected). Wire-verified: c4:4b:d1:00:47:4e (DrayTek Vigor 2762 router,
+                                                        | actively connected) in open captures; 00:00:00:00:00:00 (no AP present) in lysten_setmac_host_ppoe_and_connect_to_live.log
+                                                        | where router was powered off.
+0x07  | SSID                  |  Var  |   If associated | Byte 0: length; Byte 1: SSID string
+0x08  | Auth Type (response)  |  1    |   Always        | In ADAPTER_INFO_RESP: negotiated auth/encryption type. 0x02=open network, 0x04=WEP active. ⚠ Do NOT confuse with Tag 0x08 in
+                                                        | CONNECT_REQ (Type 0x07) which writes to CFG_Set_WEP_Enabled().
+0x09  | Link state            |  1    |   Always        | 0x01=no link, 0x02=infra linked, 0x04=ad-hoc linked
+0x0A  | WEP Key Slot 0        |  —    |   WRITE-ONLY    | ⚠ NO READ HANDLER. Falls to LAB_8009a918 (silent response corruption). Write counterpart: Table B Tag 0x0A → Wifi_Set_Security_Key(src, 0).
+0x0B  | WEP Key Slot 1        |  —    |   WRITE-ONLY    | ⚠ NO READ HANDLER. Falls to LAB_8009a918. Write counterpart: Table B Tag 0x0B → Wifi_Set_Security_Key(src, 1).
+0x0C  | WEP Key Slot 2        |  —    |   WRITE-ONLY    | ⚠ NO READ HANDLER. Falls to LAB_8009a918. Write counterpart: Table B Tag 0x0C → Wifi_Set_Security_Key(src, 2).
+0x0D  | WEP Key Slot 3        |  —    |   WRITE-ONLY    | ⚠ NO READ HANDLER. Falls to LAB_8009a918. Write counterpart: Table B Tag 0x0D → Wifi_Set_Security_Key(src, 3).
+0x0E  | get current channel   |  1    |   radio active  | channel 1-14. NEWLY CONFIRMED (v19): stored to AutoClass1+0xe41 (field3544_0xe41).
+0x0F  | WEP-128 Key           |  —    |   WRITE-ONLY    | ⚠ NO READ HANDLER. Falls to LAB_8009a918. Write counterpart: Table B Tag 0x0F → CFG_Set_WEP128_Key_Slot() all 4 slots (13-byte key).
+0x10  | WPA PMK               |  —    |   WRITE-ONLY    | ⚠ NO READ HANDLER. Falls to LAB_8009a918. Write counterpart: Table B Tag 0x10 → 32-byte PMK stub (src = pbVar4 + 0x22, discards data — not stored to hardware).
+0x11  | radio mode            |  1    |   Always        |  wlan_get_encryption_type(): 0x00=802.11b 0x01=???  0x02=802.11b/g
+0x81  | adapter MAC           |  6    |   Always        | Adapter MAC address
+0x83  | Net Reset Param       |  1    |   Always        | g_CFG_Reconnect_Mode — current reconnect mode value (read-back of Tag 0x83 write).
+0x82  | regulatory domain     |  1    |   Always        | this is the regulatory domain code burned into the AR5 hardware EEPROM
+0x84  | Max Channel           |  1    |   Always        | g_CFG_Max_Channel — configured channel ceiling (read-back of Tag 0x84 write). Clamped to hardware regulatory channel range.
+0x85  | TX Rate Code          |  1    |   If associated | Current PHY speed in MBps  see Rate code whitelist
+0x86  | Flash Block 0         |  512  |   If radio off  | EEPROM Offset 0x000 - 0x1FF
+0x87  | Flash Block 1         |  512  |   If radio off  | EEPROM Offset 0x200 - 0x3FF
+0x88  | Flash Block 2         |  512  |   If radio off  | EEPROM Offset 0x400 - 0x5FF
+0x89  | Flash Block 3         |  512  |   If radio off  | EEPROM Offset 0x600 - 0x7FF
+```
+**⚠ LAB_8009a918 — Write-only tag corruption behaviour**: Tags 0x0A–0x0D, 0x0F, 0x10 have no read handler. All fall to `LAB_8009a918` which executes `*(pPayload+2) -= 1` — it decrements whatever byte happens to be at the data position (leftover from the previous tag's response), then falls through without advancing the response write pointer. The result is a response entry with the correct tag byte but a corrupted length field and no data. The loop counter still advances so subsequent tags in the same request are processed normally. Do not include these tags in ADAPTER_INFO_REQ.
+
+## Tag 0x02 Connection State
+```
+Return | Condition                                                        | Meaning
+-------|------------------------------------------------------------------|----------------------------
+0x00   | g_NET_InterfaceStatus=0, g_DHCP_Interface_States ≠ 0x52          | Interface up, no DHCP yet
+0x01   | g_NET_InterfaceStatus=0, g_DHCP_Interface_States == 0x52         | DHCP acquired (fully connected)
+0x02   | g_NET_InterfaceStatus=1                                          | Static IP / manual mode
+⚠ UNDEF| g_NET_InterfaceStatus any other value                           | local_res5 never assigned — raw stack byte sent
+```
+**Edge case**: If `g_NET_InterfaceStatus` holds any value other than `0` or `1` (corrupted state), the firmware never assigns `local_res5` before `memcpy()` — an uninitialised stack byte is transmitted. This is a firmware bug.
+
+The WEP64 Packet #98 returned `0x00` (not `0x01`) for Tag 0x02 **despite having IP 192.168.1.181**. This means `g_DHCP_Interface_States` had not yet reached state `0x52` at the time of the query — the adapter had an IP but DHCP wasn't fully finalised in the state machine. This is a timing issue, not an error.
+
+### Tag 0x08 op mode mask
+Tag 0x08 (OpMode Mask) in Type 0x02 trailer byte 0 returns XPP_Get_Link_State_Bitmask() which reads g_WLAN_LinkState_Bit directly:
+
+g_WLAN_LinkState_Bit = 0 → returns 0x02
+g_WLAN_LinkState_Bit = 1 → returns 0x04
+
+g_WLAN_LinkState_Bit is set by CFG_Set_WEP_Enabled() which is called internally by XPP_Set_Link_State() (Tag 0x09). Value 0x04 means an active link state was committed via Tag 0x09 — it does NOT indicate ad-hoc mode. Use XPP_Tag_09_Handler_Get_Link_State() (Tag 0x09 response) to determine actual link state reliably.
+
+### Tag 0x09 Link State Return Values
+```
+Return | g_WLAN_LinkActive | g_WLAN_LinkState_Bitmask | Meaning
+-------|-------------------|--------------------------|---------------------
+0x01   | 0                 | (any)                    | No link / idle
+0x01   | 1                 | not 0x05 or 0x0d         | No link (fallback)
+0x02   | 1                 | 0x05                     | Infrastructure linked ✓
+0x04   | 1                 | 0x0d                     | Ad-Hoc linked ✓
+```
+
+### Tag 0x82 regulatory country channels
+```
+Value | Meaning   | range
+------|-----------|------------------------------------------------
+0x10  | USA       | ch 1–11 (default)
+0x20  | Canada    | ch 1–11 (default)
+0x30  | ETSI      | ch 1–13
+0x31  | Spain     | ch 10–11
+0x32  | France    | ch 10–13
+0x40  | Japan     | ch 14 only
+0x41  | Japan all | ch 1–14
+other | unknown   | ch 1–11 (default)
+```
+
+### Tag 0x85 - Rate code Whitelist
+**Note**: The "Index" column below is the Xbox-side sequential index inferred from firmware bounds checking — it is not a value transmitted on the wire. The "Hex" column is the actual PHY rate code transmitted on the wire. These PHY rate codes (0x02, 0x0B, 0x16, 0x6C, etc.) are the same values returned in Type 0x0A BEACON_RESPONSE byte 2 (`tx_rate_code`). See also the [Type 0x0A payload structure](#12-type-0x0a---beacon_response) — `drvr_get_tx_rate_code()` returns these same codes.
+```
+ Index | Rate (Mbps) | Standard  | Notes
+-------|-------------|-----------|-------
+ 0x00  | Auto-select | -         | Automatic rate negotiation
+ 0x01  | 1 Mbps      | 802.11b   | Legacy compatibility
+ 0x02  | 2 Mbps      | 802.11b   | Legacy compatibility
+ 0x03  | 5.5 Mbps    | 802.11b   |
+ 0x04  | 6 Mbps      | 802.11g   | Basic rate
+ 0x05  | 9 Mbps      | 802.11g   |
+ 0x06  | 11 Mbps     | 802.11b   | Maximum 802.11b rate
+ 0x07  | 12 Mbps     | 802.11g   |
+ 0x08  | 18 Mbps     | 802.11g   |
+ 0x09  | 24 Mbps     | 802.11g   |
+ 0x0A  | 36 Mbps     | 802.11g   |
+ 0x0B  | 48 Mbps     | 802.11g   |
+ 0x0C  | 54 Mbps     | 802.11g   | Maximum 802.11g rate
+```
+**Note**: The index column is inferred based on bounds checking in the firmware. There is no explicit index-to-rate mapping table in firmware — the Xbox performs this conversion client-side.
+
+### (Tags 0x86-0x8A) Flash Dump Feature
+This tag allows the Xbox Dashboard to verify the adapter's authenticity and retrieve factory-calibrated radio settings. The process follows a three-stage "Hardware-to-Wire" pipeline.
+
+**⚠ Partial Read Limitation**: `xpp_flash_read_wrapper()` reads only `0x400` bytes (1KB) into an `0x800`-byte buffer. On failure the buffer is filled with `0xFF` via `memset`. Each tag copies a 512-byte (`0x200`) block at offset `(tag - 0x86) * 0x200`:
+```
+Tag  | Block offset | Reliable?
+-----|--------------|----------
+0x86 | 0x000-0x1FF  | ✓ Yes — within 0x400 read
+0x87 | 0x200-0x3FF  | ✓ Yes — within 0x400 read
+0x88 | 0x400-0x5FF  | ✗ No  — beyond read limit, returns 0xFF fill on failure
+0x89 | 0x600-0x7FF  | ✗ No  — beyond read limit, returns 0xFF fill on failure
+```
+Tags 0x88 and 0x89 should be treated as unreliable unless the read is independently verified.
+
+Word-by-Word Transfer: Because the flash is memory-mapped through the wireless chip, the function calls net_interface_read_word repeatedly, pulling 16 bits at a time into a local RAM shadow buffer.
+
+Once the loop completes, the 512-byte block is moved into the XPP transmission buffer.
+**special notes**:
+- in the response the TLV Length Byte is set to 0xFF. This is a protocol-specific signal telling the Xbox that an "Extended Data Block" is following the header.
+- the radio may need to be inactive for this to work.
+
+### Wire-Verified ADAPTER_INFO_RESP Example (Open Network, Channel 3, WAN Connected)
+Captured from `lysten_open_connect_with_wan_ch_3_new.log` Packet #16.
+Xbox requested tags: 0x09, 0x01, 0x04, 0x02, 0x01, 0x04, 0x01, 0x05, 0x01, 0x06, 0x06, 0x07, 0x20, 0x08, 0x01, 0x09, 0x01, 0x11, 0x01 (9 tags total).
+
+#### ⚠Response Payload Structure
+The ADAPTER_INFO_RESP payload does **not** begin with a plain TLV stream. It has a fixed preamble payload headder:
+```
+Byte(s)        | Description
+---------------|------------------------------------------------------------
+0x00           | Firmware artefact (always 0x00, present only when IP assigned)
+0x09           | number [Tag][Len][Val] triplets sent in this payload
+TLV stream     | Remaining tags as standard [Tag][Len][Val] triplets
+```
+The IP field is only present when the `link_state` byte indicates a connected state. This structure
+was confirmed by comparing open network, WEP-64, and WEP-128 wire captures.
+
+```
+Raw bytes (payload only, after XPP header):
+00 09 | 01 04 c0 a8 01 96 | 02 01 00 | 04 01 01 | 05 01 03 | 06 06 c4 4b d1 00 47 4e | 07 04 6f 70 65 6e | 08 01 02 | 09 01 01 | 11 01 02
+
+Decoded:
+ Byte(s)                 | Value           | Meaning
+-------------------------|-----------------|--------------------------------------------------
+ 00                      | 0x00            | Firmware byte alignment artefact (always 0x00)
+ 09                      | 0x09            | number of tags in the following payload
+ 01 04 c0 a8 01 96       | Tag 0x01 len 4  | IP Address: 192.168.1.150 (raw field, not TLV)
+ 02 01 00                | Tag 0x02 len 1  | DHCP state: 0x00 (g_DHCP_Interface_States not yet 0x52)
+ 04 01 01                | Tag 0x04 len 1  | Radio active: 0x01 (radio on)
+ 05 01 03                | Tag 0x05 len 1  | Channel: 3 (wire-confirms channel 3 = 0x03) ✅
+ 06 06 c4 4b d1 00 47 4e | Tag 0x06 len 6  | BSSID: c4:4b:d1:00:47:4e (DrayTek Vigor 2762 router)
+ 07 04 6f 70 65 6e       | Tag 0x07 len 4  | SSID: "open" (4 bytes)
+ 08 01 02                | Tag 0x08 len 1  | Auth type: 0x02 (open network — no WEP encryption)
+ 09 01 01                | Tag 0x09 len 1  | link_state: 0x01 (no link — ADAPTER_INFO_REQ is sent before CONNECT_REQ)
+ 11 01 02                | Tag 0x11 len 1  | Encryption type: 0x02 (pre-set by CFG_Set_XPP_Auth_Mode)
+```
+**Note**: Tag 0x09 = `0x01` (no link) is the expected state during the ADAPTER_INFO query phase —
+the dashboard queries current state BEFORE sending CONNECT_REQ, so the adapter is not yet
+associated at this point. Tag 0x02 = `0x00` confirms DHCP is not active. Both are consistent
+with the normal session flow, not error conditions. The Tag 0x11 = `0x02` (WEP) appears
+because `CFG_Set_XPP_Auth_Mode(0x02)` was previously called (Tag 0x11 in a Type 0x07 connect packet).
+
+#### Tag 0x08 in ADAPTER_INFO_RESP — Auth Type
+⚠ In ADAPTER_INFO_RESP (Type 0x06), Tag 0x08 reports the **negotiated authentication/encryption type**,
+not the link state bitmask. This is different from Tag 0x08 in CONNECT_REQ (Type 0x07) where it is the
+security mode flag written to `CFG_Set_WEP_Enabled()`.
+```
+Value | Meaning
+------|-------------------------------------------------------------------
+0x02  | Open network (no WEP encryption) — wire-verified
+0x04  | WEP encryption active (64-bit or 128-bit) — wire-verified
+```
+Wire evidence: open network (`ssid=open`) returns `0x02`; both WEP-128 ASCII (`ssid=wpa_128`) and
+WEP-64 ASCII (`ssid=wpa_64`) return `0x04` in their respective ADAPTER_INFO_RESP Tag 0x08 fields.
+
+### Wire-Verified ADAPTER_INFO_RESP Examples (WEP Connections)
+Captured from `lysten_wep_secured_128_bit_ascii.log` Packet #111 and `lysten_wep_secured_64_bit_ascii.log` Packet #98.
+New router (BSSID prefix `02:1d:aa`), channel 11, IP 192.168.1.181.
+```
+--- WEP 128-bit ASCII (ssid=wpa_128) ---
+Raw payload preamble + TLV stream:
+00 09 01 04 | c0 a8 01 b5 | 02 01 00 | 04 01 01 | 05 01 0b | 06 06 02 1d aa 64 c6 50 | 07 07 77 70 61 5f 31 32 38 | 08 01 04 | 09 01 04 | 11 01 02
+
+ Byte(s)                          | Meaning
+----------------------------------|---------------------------------------------------
+ 00                               | Firmware artefact byte (always 0x00, present when IP is assigned)
+ 09                               | 9 tags in the following payload
+ 01 04 c0 a8 01 b5                | IP Address: 192.168.1.181 (raw field)
+ 02 01 00                         | DHCP state: 0x00 (timing lag, IP assigned but state not 0x52 yet)
+ 04 01 01                         | Radio active: 0x01
+ 05 01 0b                         | Channel: 11 (0x0b) — new router on channel 11
+ 06 06 02 1d aa 64 c6 50          | BSSID: 02:1d:aa:64:c6:50 (new router, locally administered MAC)
+ 07 07 77 70 61 5f 31 32 38       | SSID: "wpa_128" (7 bytes — test network name, not WPA protocol)
+ 08 01 04                         | Auth type: 0x04 ✅ WEP active
+ 09 01 04                         | link_state: 0x04 (ad-hoc state code — exact meaning TBD)
+ 11 01 02                         | Encryption type: 0x02
+
+--- WEP 64-bit ASCII (ssid=wpa_64) ---
+Raw payload preamble + TLV stream:
+00 09 01 04 | c0 a8 01 b5 | 02 01 00 | 04 01 01 | 05 01 0b | 06 06 02 1d aa 54 c6 50 | 07 06 77 70 61 5f 36 34 | 08 01 04 | 09 01 02 | 11 01 02
+
+ Byte(s)                          | Meaning
+----------------------------------|---------------------------------------------------
+ 00                               | Firmware artefact byte (always 0x00, present when IP is assigned)
+ 09                               | 9 tags in the following payload
+ 01 04 c0 a8 01 b5                | IP Address: 192.168.1.181 (raw field)
+ 02 01 00                         | DHCP state: 0x00 (timing lag)
+ 04 01 01                         | Radio active: 0x01
+ 05 01 0b                         | Channel: 11 (0x0b)
+ 06 06 02 1d aa 54 c6 50          | BSSID: 02:1d:aa:54:c6:50 (note different from 128-bit session)
+ 07 06 77 70 61 5f 36 34          | SSID: "wpa_64" (6 bytes — test network name, not WPA protocol)
+ 08 01 04                         | Auth type: 0x04 ✅ WEP active
+ 09 01 02                         | link_state: 0x02 (infrastructure linked)
+ 11 01 02                         | Encryption type: 0x02
+```
+**Notes**:
+- Both WEP sessions confirm `Tag 0x08 = 0x04` as the wire indicator of WEP encryption.
+- The SSIDs `wpa_128` and `wpa_64` are test network names — the actual protocol is WEP in both cases, confirmed by the key tags sent in CONNECT_REQ and by Tag 0x08 = 0x04 in the response.
+- Tag 0x02 = `0x00` is the expected value during the ADAPTER_INFO query phase — the dashboard queries state before sending CONNECT_REQ, before DHCP has been established for the new connection.
+- The WEP 128-bit session shows `Tag 0x09 = 0x04` (ad-hoc code) while WEP 64-bit shows `0x02` (infrastructure). Both connections are infrastructure — the `0x04` value here may be a transient state; further capture needed.
+
+### Related Information
+- [Type 0x05 Request](#7-type-0x05---adapter_info_request)
+
+----
+
+## 9. Type 0x07 - CONNECT_TO_SSID_REQUEST
+**Direction**: Xbox → Adapter  
+**Transport**: Ethernet 0x886f  
+**HMAC Required**: No
+
+### Brief Description
+Configures network connection with TLV-encoded parameters
+configure and save and adapter settings to the Eeprom.
+
+### Packet Format
+```
+Total size: (14 Ethernet + 12 Header + Payload + padding) = N bytes
+Body size:  (12 xpp header + payload + padding) / 4 = N DWORDS
+
+Size (Bytes) | Segment          | Description
+-------------|------------------|--------------------------------
+14 bytes     | Ethernet header  | Standard Header
+12 bytes     | XPP Header       | Type 0x07, body size = variable
+1  byte      | TLV Count        | Number of TLV tags that follow in this payload
+variable     | TLV Stream       | stream of TLV tags [Tag][Length][Value]), etc.
+0 - 3 bytes  | Empty/Padding    | padding to align to 4 byte boundary
+```
+
+### Tag Encoding Format
+TLV tags are just string in a array of bytes one after the other and are aligned to 4 byte boundary with padding.
+
+All TLV tags use: `[1 byte Tag] [1 byte Length] [N bytes Value]`
+
+### Table B - Type 0x07 TLV Tag Table
+**Source**: Confirmed directly from firmware function `XPP_Parse_Entry()` in NML_bin.c.
+
+**Note**: These tags are handled exclusively by `XPP_Parse_Entry()`. Do **not** confuse with Table A tags (Types 0x05/0x06) which share some tag numbers but have completely different meanings.
+
+```
+ Tag | Name                    | Size | Firmware Function Called              | Description
+-----|-------------------------|------|---------------------------------------|--------------------------------------------------------
+0x00 | CFG Save & Reboot       | 0    | Flash_Commit_Settings()               | Save current config to flash and triggers system reboot
+     |                         |      | + CFG_Save_To_Flash()                 |
+     |                         |      | + hw_trigger_reboot_sequence()        |
+0x01 | IP Address              | 4    | memcpy → CFG_Device_IP                | Static IP address configuration (big-endian)
+0x02 | Connection State        | 1    | g_NET_InterfaceStatus = (*src == 2)   | 0x02=enable (true), any other value=disable (false)
+0x03 | XPP Admin Password /    | 0-16 | memcpy → G_XPP_Admin_Identity         | Console pairing lock: prevents unauthorised consoles from reconfiguring the adapter.
+     | Pairing Lock            |      |                                       | Factory default "admin". Also serves as HTTP/TFTP admin username. len=0 clears the password. Wire-
+                                                                              | verified: lysten_password.log Pkt#9 sets "aabbccddee", Pkt#99 clears (len=0x00).
+0x04 | Operating Mode          | 1    | WLAN_Set_Operating_Mode()             | Wireless operating mode configuration.
+0x05 | allowed channel range   | 1    | CFG_Set_Max_Channel()                 | sets the allowed wifi channel range
+0x06 | Target Xbox MAC         | 6    | CFG_Set_Paired_Xbox_MAC()             | 6-byte MAC address of paired Xbox console.
+0x07 | target SSID             | 1-32 | CFG_Set_Target_SSID ()                | Network SSID to connect to.
+0x08 | security mode           | 1    | CFG_Set_WEP_Enabled()                 | appears to set the WEP / security bit.
+0x09 | link State              | 1    | XPP_Set_Link_State()                  | Wireless link state update.
+0x0A | WEP Key Slot 0          | 5    | Wifi_Set_Security_Key(src, 0)         | WEP-40 key slot 0 (5-byte key).
+0x0B | WEP Key Slot 1          | 5    | Wifi_Set_Security_Key(src, 1)         | WEP-40 key slot 1 (5-byte key).
+0x0C | WEP Key Slot 2          | 5    | Wifi_Set_Security_Key(src, 2)         | WEP-40 key slot 2 (5-byte key).
+0x0D | WEP Key Slot 3          | 5    | Wifi_Set_Security_Key(src, 3)         | WEP-40 key slot 3 (5-byte key).
+0x0E | Radio Channel Index     | 1    | CFG_Set_WiFi_Channel ()               | Selects the active Wi-Fi channel.
+0x0F | WEP-128 Advanced        | 13   | CFG_Set_WEP128_Key_Slot()             | Writes 13-byte WEP-128 key into all 4 slots of G_CFG_WEP128_Key_Table.
+0x10 | WPA PMK                 | 32   | src = pbVar4 + 0x22 (stub — discards) | 32-byte WPA Pairwise Master Key. Dashboard hex-decodes user's 64-char hex input to 32 raw bytes and sends
+                                                                              | here. STUB — firmware advances pointer 0x22 bytes from tag byte (tag+len+32) and silently discards. Not
+                                                                              | stored, not passed to hardware key engine. See §Tag 0x10 below.
+0x11 | Auth mode Flag          | 1    | CFG_Set_XPP_Auth_Mode()               | Flag to indicate saved network was encrypted if it is not connected to indicate via state
+0x12 | WPA Passphrase          | 8-63 | NOT HANDLED — falls to got_unknown_%d | Raw ASCII WPA passphrase (8–63 chars). Dashboard sends when user enters a text passphrase (not pre-computed
+                                                                              | PMK). Stock firmware has NO case for 0x12: parser logs got_unknown_%d and exits the TLV loop immediately.
+                                                                              | Tags after 0x12 in the same packet are NEVER processed. See §Tag 0x12 below.
+0x14 | MAC Address Clone       | 6    | see mac adress cloning / spoofing     | 6-byte MAC address to spoof. Historically logged and documented; wire capture lost. Not emitted by
+                                                                              | `xonlinedash.xbe` — originates from the network settings XBE (multi-XBE dash architecture). No `case 0x14`
+                                                                              | in firmware v1.0.2.26 parser. See §Tag 0x14 below.
+0x81 | Session MAC Init        | 6    | XPP_Establish_Secure_Identity_Link()  | 6-byte MAC → copies to session buffer then initialises session
+0x82 | Interface Reset/Reinit  | 1    | NET_Interface_Reset_And_Reconnect()   | Value=0x00: skip disconnect, go straight to MAC reinit. Value≠0x00: call disconnect_interface_handle(0,
+                                                                              | value) first, then reinit. Internally calls what Ghidra labels NET_Is_Link_Active — this is a misnomer, the
+                                                                              | function is actually NET_Reinit_Interface_With_MAC.
+0x83 | Net Reset Param         | 1    | g_CFG_Reconnect_Mode = val            | Parameter passed to NET_Interface_Reset_And_Reconnect(). **Valid values**: 0, 1, 2 only. Defaults to 1 if
+                                                                              | invalid. Factory default = 1.
+0x84 | Max Channel             | 1    | g_CFG_Max_Channel = val               | Sets the Wi-Fi regulatory channel ceiling. Input clamped to hardware range via
+                                                                              | determine_hw_channel_range(). Defaults to channel 11 if out of range.
+0x85 | TX Rate Code            | 1    | g_CFG_TX_Rate_Index = val             | 802.11 rate code — validated against whitelist. If not in whitelist, value is **silently dropped** (not
+                                                                              | stored). No clamping occurs.
+```
+### Tag 0x04 Operating mode
+```
+Hex  | Description
+-----|-------------
+0x00 | Disable radio
+0x01 | Enable radio
+```
+
+### Tag 0x08 op mode mask
+Tag 0x08 (OpMode Mask) in Type 0x02 trailer byte 0 returns `XPP_Get_Link_State_Bitmask()` which reads `g_WLAN_LinkState_Bit` directly:
+```
+g_WLAN_LinkState_Bit = 0 → returns 0x02
+g_WLAN_LinkState_Bit = 1 → returns 0x04
+```
+`g_WLAN_LinkState_Bit` is set by `CFG_Set_WEP_Enabled()` which is called internally by `XPP_Set_Link_State()` (Tag 0x09). Both infrastructure and ad-hoc connect set `g_WLAN_LinkState_Bit = 1`, so trailer byte 0 returns `0x04` for both — it only indicates WEP is active, not the network topology. Use `XPP_Tag_09_Handler_Get_Link_State()` to determine actual link type reliably.
+
+---
+
+### Tag 0x09 (XPP_Set_Link_State)
+**This tag controls `g_WLAN_LinkActive`, `g_WLAN_LinkState_Bitmask`, and `g_WLAN_LinkState_Bit` (via `CFG_Set_WEP_Enabled()`).**
+
+```
+Val  | g_WLAN_LinkActive | g_WLAN_LinkState_Bitmask | g_WLAN_LinkState_Bit | Meaning
+-----|-------------------|--------------------------|----------------------|------------------------
+0x01 | 0 (link down)     | unchanged                | 0 (WEP disabled)     | Disassociate / go idle
+0x02 | 1 (link up)       | 0x05                     | 1 (WEP enabled)      | Infrastructure connect
+0x04 | 1 (link up)       | 0x0d                     | 1 (WEP enabled)      | Ad-Hoc connect
+```
+
+`XPP_Tag_09_Handler_Get_Link_State()` reads `g_WLAN_LinkActive` and `g_WLAN_LinkState_Bitmask` to determine the link state returned in Type 0x06 Tag 0x09.
+
+`XPP_Get_Link_State_Bitmask()` reads `g_WLAN_LinkState_Bit` to return the opmode mask in Type 0x02 trailer byte 0. Both infrastructure and ad-hoc connect set `g_WLAN_LinkState_Bit = 1`, so trailer byte 0 returns `0x04` for both — it only indicates WEP is active, not the network topology. Use `XPP_Tag_09_Handler_Get_Link_State()` to determine actual link type.
+
+## Tags 0x81–0x85 — Provisioning / Management Tags (Not sent by Dashboard)
+
+**Important**: Tags 0x81–0x85 are **never sent by the Xbox dashboard** (`xonlinedash.xbe`). A thorough search of `FUN_000a364e` (the CONNECT_REQ builder) and all related functions confirms no code path emits these tag values. They are only processable by the adapter firmware.
+
+**Likely origin**: These tags were intended for a PC-side provisioning utility (the Windows MN-740 Setup Wizard), a factory test jig, or a future firmware update mechanism. The Xbox dashboard communicates exclusively via tags 0x00–0x12.
+
+| Tag  | Name                      | Size | Firmware Handler                        | Purpose |
+|------|---------------------------|------|-----------------------------------------|---------|
+| 0x81 | Session MAC Init          | 6    | `XPP_Establish_Secure_Identity_Link()`  | Register Xbox's MAC as trusted peer; generate session ID |
+| 0x82 | Interface Reset / Reinit  | 1    | `NET_Interface_Reset_And_Reconnect()`   | Force disconnect + WLAN interface reinit (see below) |
+| 0x83 | Reconnect Mode            | 1    | `g_CFG_Reconnect_Mode = val`            | Auto-reconnect behaviour (0=off, 1=auto, 2=manual) |
+| 0x84 | Max Channel               | 1    | `g_CFG_Max_Channel = val`               | Set regulatory channel ceiling (range-validated) |
+| 0x85 | TX Rate Code              | 1    | `g_CFG_TX_Rate_Index = val`             | Force TX rate (validated against whitelist; silent drop if invalid) |
+
+### Tag 0x81 — Session MAC Init
+**Function**: `XPP_Establish_Secure_Identity_Link(p_mac_addr)`:
+1. Calls `Net_Init_Socket_Logic(p_mac_addr, 6)` to validate/register the MAC.
+2. If successful: calls `NET_Register_Peer_MAC(p_mac_addr)` to store the Xbox MAC as the trusted peer.
+3. Sets `g_XPP_Current_Session_ID = XPP_Get_Identity_Token()` to start a new authenticated session.
+
+This is the **pairing step** — it binds a specific Xbox console MAC to the adapter. The HMAC-SHA1 session authentication in HANDSHAKE derives from this peer MAC.
+
+## Tag 0x82 — Interface Reset/Reinit
+```
+Value  | Meaning
+-------|----------------------------------
+= 0x00 | Skip disconnect_interface_handle(), go straight to MAC reinit
+≠ 0x00 | First call disconnect_interface_handle(0, value) (tear down with that reason code), then reinit
+```
+**Note**: After the conditional disconnect, the firmware calls `NET_Reinit_Interface_With_MAC()` which reinitialises the WLAN interface using the hardware MAC from `ath_hal_get_hw_info()`. If that returns an all-zero MAC (hardware failure), the reinit step is silently skipped. This is one mechanism for **undoing MAC address spoofing** — reinit restores the hardware MAC.
+
+### Tag 0x84 channel range table
+**Note**: `determine_hw_channel_range()` reads the regulatory domain code burned into the AR5 hardware EEPROM and returns the permitted min/max channel for that region. Tag 0x84 write values outside this range are clamped to channel 11.
+```
+Reg Domain | Min Channel | Max Channel | Default if invalid
+-----------|-------------|-------------|-------------------
+0x30       | 1           | 13          | 11
+0x31       | 10          | 11          | 11
+0x32       | 10          | 13          | 11
+0x40       | 14          | 14          | 11
+0x41       | 14          | 14          | 11
+other      | 1           | 11          | 11
+```
+### Tag 0x85 - Rate Whitelist/ Tag 0x84 rate Index
+**Note**: The "index" column is the Xbox-side sequential index inferred from firmware bounds checking in the Tag 0x84 chip revision table above. The "Hex" column is the actual PHY rate code written to `g_CFG_TX_Rate_Validated` and transmitted on the wire. These PHY rate codes are the same values returned in Type 0x0A BEACON_RESPONSE byte 2 (`tx_rate_code` via `drvr_get_tx_rate_code()`). The two tables are describing the same rate-code enumeration — one from the write path (Type 0x07), one from the read/status path (Type 0x0A).
+```
+ index    |Hex   | Rate (Mbps) | Standard  | Notes
+----------|------|-------------|-----------|--------
+          | 0x00 | Auto-select | -         | Automatic rate negotiation
+ 0x01     | 0x02 | 1 Mbps      | 802.11b   | Legacy compatibility
+ 0x02     | 0x04 | 2 Mbps      | 802.11b   | Legacy compatibility
+ 0x04     | 0x0B | 5.5 Mbps    | 802.11b   |
+ 0x0B     | 0x16 | 11 Mbps     | 802.11b   | Maximum 802.11b rate
+ 0x0C     | 0x0C | 6 Mbps      | 802.11g   | Basic rate
+ 0x12     | 0x12 | 9 Mbps      | 802.11g   |
+ 0x18     | 0x18 | 12 Mbps     | 802.11g   |
+ 0x24     | 0x24 | 18 Mbps     | 802.11g   |
+ 0x30     | 0x30 | 24 Mbps     | 802.11g   |
+ 0x48     | 0x48 | 36 Mbps     | 802.11g   |
+ 0x60     | 0x60 | 48 Mbps     | 802.11g   |
+ 0x6C     | 0x6C | 54 Mbps     | 802.11g   | Maximum 802.11g rate
+```
+**Note**: .5 Mbps is the firmware clamp/ fall-back value set if an invalid rate code is received.
+and the index column is speculative / inferred as there is no index in the firmware with mapping.
+
+### Wire-Verified Examples
+
+All examples below are decoded directly from captured log files using `XPP_Type02_0x07_FlashConfig()` parser offsets: XPP header at byte 14, TLV count at byte 26 (`iVar3+0x0c`), first TLV at byte 27 (`iVar3+0x0d`).
+
+**Open network** (`lysten_open_ch9_b.log` Pkt#19):
+```
+Raw (60 bytes):
+  0000: 00 12 5a 33 fa 31 00 0d 3a 50 22 73 88 6f 58 42
+  0010: 4f 58 01 01 09 07 bf dc 87 0a 04 07 0b 6f 70 65
+  0020: 6e 5f 63 68 39 5f 62 67 08 01 00 09 01 01 11 01
+  0030: 00 00 00 00 00 00 00 00 00 00 00 00
+
+XPP: type=0x07  body_dwords=9  nonce=0xbfdc
+TLV count: 4
+  [1] Tag 0x07 SSID         len=11  "open_ch9_bg"
+  [2] Tag 0x08 Sec_Mode     len= 1  0x00  (open)
+  [3] Tag 0x09 Link_State   len= 1  0x01  (disassociate/idle)
+  [4] Tag 0x11 Auth_Mode    len= 1  0x00  (no encryption)
+  Padding: 00 00 00 00 00 00 00 00 00 00 00 00
+```
+
+**WEP-128 ASCII single-key** (`lysten_wep128_ch9_b.log` Pkt#15):
+```
+Raw (60 bytes):
+  0000: 00 12 5a 33 fa 31 00 0d 3a 50 22 73 88 6f 58 42
+  0010: 4f 58 01 01 0b 07 fe 05 51 ae 02 07 0d 77 70 61
+  0020: 5f 31 32 38 5f 63 68 39 5f 62 0f 0d 61 62 63 64
+  0030: 65 61 62 63 64 65 61 62 63 00 00 00
+
+XPP: type=0x07  body_dwords=11  nonce=0xfe05
+TLV count: 2
+  [1] Tag 0x07 SSID         len=13  "wpa_128_ch9_b"
+  [2] Tag 0x0f WEP128_Key   len=13  61 62 63 64 65 61 62 63 64 65 61 62 63  ("abcdeabcdeabc")
+  Padding: 00 00 00
+```
+
+**WEP-64 ASCII 4-key** (`lysten_wep64_ch9_b.log` Pkt#15):
+```
+Raw (78 bytes):
+  0000: 00 12 5a 33 fa 31 00 0d 3a 50 22 73 88 6f 58 42
+  0010: 4f 58 01 01 10 07 db 02 46 01 08 07 0c 77 70 61
+  0020: 5f 36 34 5f 63 68 39 5f 62 08 01 00 09 01 02 0e
+  0030: 01 01 0a 05 61 62 63 64 65 0b 05 61 62 63 64 65
+  0040: 0c 05 61 62 63 64 65 0d 05 61 62 63 64 65
+
+XPP: type=0x07  body_dwords=16  nonce=0xdb02
+TLV count: 8
+  [1] Tag 0x07 SSID         len=12  "wpa_64_ch9_b"
+  [2] Tag 0x08 Sec_Mode     len= 1  0x00  (open/WEP mode selector)
+  [3] Tag 0x09 Link_State   len= 1  0x02  (infrastructure connect)
+  [4] Tag 0x0e Radio_Ch     len= 1  0x01  (channel index 1)
+  [5] Tag 0x0a WEP_K0       len= 5  61 62 63 64 65  ("abcde")
+  [6] Tag 0x0b WEP_K1       len= 5  61 62 63 64 65
+  [7] Tag 0x0c WEP_K2       len= 5  61 62 63 64 65
+  [8] Tag 0x0d WEP_K3       len= 5  61 62 63 64 65
+```
+
+**WEP-128 hex-encoded key** (`lysten_wep128hex_ch9_b.log` Pkt#11):
+```
+Raw (66 bytes):
+  0000: 00 12 5a 33 fa 31 00 0d 3a 50 22 73 88 6f 58 42
+  0010: 4f 58 01 01 0d 07 b6 d4 1a 2b 03 07 10 77 70 61
+  0020: 5f 31 32 38 68 65 78 5f 63 68 39 5f 62 0f 0d 11
+  0030: 11 11 11 11 11 11 11 11 11 11 11 11 11 01 00 00
+  0040: 00 00
+
+XPP: type=0x07  body_dwords=13  nonce=0xb6d4
+TLV count: 3
+  [1] Tag 0x07 SSID         len=16  "wpa_128hex_ch9_b"
+  [2] Tag 0x0f WEP128_Key   len=13  11 11 11 11 11 11 11 11 11 11 11 11 11  (13× 0x11)
+  [3] Tag 0x01 (?)          len= 0  (zero-length — see note)
+  Padding: 00 00
+```
+
+**⚠️ Note on TLV[3] "Tag 0x01, len=0"**: The third TLV (`01 00`) appears only in the b-band-only variant of this capture (`_b`, not `_bg`). It is **not present** in `lysten_wep128hex_ch9_bg.log` or `lysten_wep128_ch9_b.log`. The hex-input vs ASCII-input code paths call identical firmware functions (`FUN_000a2e3a` + `FUN_000a2d32`) — neither emits a hex-marker tag. The most likely explanation is that this TLV was carried over from a prior connection state where the IP address flag (`0xff8` bit `0x02`, Tag 0x01) was set and not fully cleared between sessions. With `len=0`, the firmware `case 1:` handler still executes `memcpy(&CFG_Device_IP, src, 4)` (reads 4 bytes regardless of len) then advances `src = pbVar4 + 6` — this is a firmware bug but functionally harmless when the 4 bytes are padding zeros. **There is no "hex WEP marker tag"** — the adapter receives the same binary key bytes regardless of whether the user entered them as ASCII or hex on the dashboard.
+
+**WEP-128 hex-encoded key, b+g band** (`lysten_wep128hex_ch9_bg.log` Pkt#17):
+```
+Raw (62 bytes):
+  0000: 00 12 5a 33 fa 31 00 0d 3a 50 22 73 88 6f 58 42
+  0010: 4f 58 01 01 0c 07 aa 2a 25 82 02 07 11 77 70 61
+  0020: 5f 31 32 38 68 65 78 5f 63 68 39 5f 62 67 0f 0d
+  0030: 11 11 11 11 11 11 11 11 11 11 11 11 11 00
+
+XPP: type=0x07  body_dwords=12  nonce=0xaa2a
+TLV count: 2
+  [1] Tag 0x07 SSID         len=17  "wpa_128hex_ch9_bg"
+  [2] Tag 0x0f WEP128_Key   len=13  11 11 11 11 11 11 11 11 11 11 11 11 11  (13× 0x11)
+```
+Note: identical binary key to the ASCII case — dashboard decodes hex before sending.
+
+**XPP Admin Password — Set** (`lysten_password.log` Pkt#9):
+```
+Raw (60 bytes):
+  0000: 00 0d 3a 1f 26 09 00 0d 3a 50 22 73 88 6f 58 42
+  0010: 4f 58 01 01 07 07 7b c4 d8 a4 01 03 0a 61 61 62
+  0020: 62 63 63 64 64 65 65 00 00 00 00 00 00 00 00 00
+  0030: 00 00 00 00 00 00 00 00 00 00 00 00
+
+XPP: type=0x07  body_dwords=7  nonce=0x7bc4
+TLV count: 1
+  [1] Tag 0x03 Admin_Ident  len=10  "aabbccddee"  (XPP admin password / pairing lock)
+```
+Note: only Tag 0x03 is sent — SSID and security mode are omitted because the adapter already
+has a stored profile from a previous session. The user is setting the XPP admin password
+that prevents other consoles from reconfiguring this adapter.
+
+**Notes from wire analysis**:
+- Tag 0x08 is **absent** from the WEP-128 captures. The firmware infers WEP mode from the key tag (0x0f or 0x0a–0x0d) itself via `CFG_Set_WEP_Enabled()` called from within the key handlers.
+- Tag 0x04 (Operating Mode) is **absent** from all these captures — it is only sent when the mode needs to change from the adapter's current state.
+- Tag 0x09 (Link State) is present in WEP-64 (`0x02` = infrastructure) but absent from WEP-128 examples. The adapter infers link state from having received key data.
+- Tags appear in ascending numerical order as the firmware processes them in a single forward pass with no backtracking.
+- The TLV count at `iVar3+0x0c` is a hard limit: the firmware iterates exactly that many TLV entries and stops, regardless of remaining bytes.
+
+**Notes on tag ordering and unknown tags**:
+- Tags **must** be packed in ascending numerical order. The firmware processes TLVs in a single forward pass with no backtracking and no random-access. Out-of-order tags are not rejected but the firmware will have already acted on earlier tags before the later ones arrive.
+- **Unknown tags abort the entire parse loop** (`got_unknown_%d` + `goto LAB_8009b120`). Do NOT include unrecognised tags. Tag 0x12 triggers this abort in stock firmware — see §Tag 0x12 above.
+- Tag 0x13 was reserved for Turbo-G mode but the corresponding firmware case is absent — it is unimplemented protocol space, not a NOP. Sending tag 0x13 will abort the parse loop.
+- Padding bytes at the end of the packet (after all TLVs) are never reached by the parser due to the TLV count hard limit.
+
+Beacons/multicast cap at 2 Mbps
+unicast cap at 11 Mbps
+ARF steps up to 11 Mbps ceiling
+These rates are a hardcoded firmware limitation designed to ensure BSS stability and prevent 'Hidden Node' collisions during System Link play.
+
+## Clock Synchronization:
+Ad-Hoc peers rely on TSF (Timing Synchronization Function) found in beacons to keep their hardware clocks in sync. If these were sent at 54 Mbps, a peer at the edge of the range might miss them, causing the Ad-Hoc network to "split."
+
+Because Ad-Hoc networks lack a central Access Point to manage "Hidden Nodes" (where two Xboxes can see the host but not each other). High-speed OFDM (54 Mbps) is very sensitive to collisions. By capping the data at 11 Mbps (DSSS/CCK), the signal is much more "penetrating" and less likely to drop frames during intense System Link play.
+
+### Tag 0x03 - XPP Admin Password / Console Pairing Lock
+
+**Dashboard source buffer**: `AutoClass1+0xf60` (max 17 bytes; length 3–16 printable ASCII enforced by `FUN_000a2bd3`). Setting this field sets `0xff8` bit `0x08` → `FUN_000a364e` emits Tag 0x03.
+
+**Purpose**: The XPP admin password is a security feature that locks the adapter against
+configuration changes by an unauthorised console. When set, only a console that presents the
+correct password via Tag 0x03 can issue `CONNECT_REQ` commands that modify the adapter's
+settings. This prevents another Xbox from hijacking a paired adapter.
+
+Firmware stores the value in `G_XPP_Admin_Identity` (max 17 bytes including null terminator).
+Factory default is `"admin"` (set by `Flash_Commit_Settings()`). This same credential is also
+used as the HTTP/TFTP admin username for the adapter's built-in web configuration page.
+
+**Setting the password**: Send Tag 0x03 with the new password string (3-16 printable ASCII).
+**Clearing the password**: Send Tag 0x03 with length = 0x00 (empty value).
+
+**Wire-verified** (`lysten_password.log`):
+
+Packet 9 - Setting the admin password to `"aabbccddee"`:
+```
+Type: 0x07 (CONNECT_REQ)
+Payload: 01 | 03 0a 61 61 62 62 63 63 64 64 65 65
+              tag=0x03, len=10, val="aabbccddee"
+```
+
+Packet 99 - Clearing the admin password (len=0x00):
+```
+Type: 0x07 (CONNECT_REQ)
+Payload: 01 | 03 00
+              tag=0x03, len=0, val=(empty - clears password)
+```
+
+**Context of the capture**: The adapter already had a saved connection profile (`wpa_128hex`,
+seen in HANDSHAKE_RESP). No SSID, no security tags were sent - only Tag 0x03 - because the
+adapter profile was unchanged and only the admin password was being set then cleared.
+The BEACON_RESP auth byte transitions `0x02 -> 0x03` after Pkt#9 (adapter re-processing
+config), then back to `0x02` after Pkt#99 (cleared). A second HANDSHAKE_REQ from a different
+console MAC (`00:0d:3a:50:22:73`) appears at Pkt#199.
+
+### CRITICAL: Tag 0x10 — WPA PMK (Firmware Stub — Discards) ⚠️
+
+this field IS the WPA Pairwise Master Key (PMK). The 32-byte value is exactly what the 802.11 4-way handshake requires as input to the PRF function for PTK derivation.
+
+**Why it is called PMK and not something else**: the dashboard's `FUN_00079633` performs PBKDF2-equivalent hex decoding of the user's 64-char hex input to produce a 32-byte value that represents the raw pre-shared key material — this is the standard PMK for WPA-PSK as defined in IEEE 802.11i §8.5.1.2.
+
+**Tag 0x10 Wire Format**:
+```
+Offset | Size | Field                     | Description
+-------|------|---------------------------|------------------
+0      | 1    | Tag                       | 0x10
+1      | 1    | Length                    | 0x20 (32 bytes follow)
+2-33   | 32   | PMK (Pairwise Master Key) | Raw 256-bit pre-shared key
+```
+
+**Dashboard Behaviour**: When the user enters a 64-character hex string as the WPA key,
+`FUN_00079633()` validates it is valid hex, converts it to 32 raw bytes, calls
+`FUN_000a2e62()` (sets security mode = 0x04 = WPA), then `FUN_000a2d51()` which copies
+the 32-byte PMK into `AutoClass1+0xf93` and sets `0xff8` bit `0x10000`. The connect
+request builder `FUN_000a364e` then emits Tag 0x10 with `puVar9[1]=0x20` (length=32)
+and the 32-byte PMK from `0xf93..0xfb2`.
+
+**Stock Firmware Reality** (v1.0.2.26): Tag 0x10 is a dead stub.
+```c
+// XPP_Type02_0x07_FlashConfig() — exact firmware source
+case 0x10:
+    src = pbVar4 + 0x22;   // pbVar4 = tag byte; +0x22 = skip tag(1) + len(1) + 32 bytes = 34 total
+    break;
+```
+The PMK is silently discarded. It is **not** stored and **not** passed to the hardware key engine.
+
+**Pointer advance = 0x22 bytes from the tag byte** = `tag(1) + length(1) + 32 value bytes`.
+This is NOT 32 bytes from the tag — it is 34 bytes total. The length field is still consumed.
+Emulators must advance exactly 34 bytes from the start of the tag or subsequent tags will desync.
+
+---
+
+### CRITICAL: Tag 0x12 — WPA Passphrase (Fatal Parse Abort) ⚠️
+
+**Tag 0x12 Wire Format**:
+```
+Offset | Size  | Field      | Description
+-------|-------|------------|------------------
+0      | 1     | Tag        | 0x12
+1      | 1     | Length     | 8–63 (WPA2 passphrase length)
+2-N    | 8-63  | Passphrase | Raw ASCII passphrase (0x20–0x7e only)
+```
+
+**Dashboard Behaviour**: When the user enters a text passphrase (not a 64-hex PMK),
+`FUN_000a2d81()` validates it is 8–63 printable ASCII chars, stores it at
+`AutoClass1+0xfb3` (max 63 bytes + NUL), sets `0xff8` bit `0x40000`. The connect
+request builder `FUN_000a364e` then emits Tag 0x12 with the raw passphrase bytes
+(via `strlen` from `0xfb3`, capped at 63).
+
+**Stock Firmware Reality** (v1.0.2.26): Tag 0x12 has **NO case** in `XPP_Type02_0x07_FlashConfig()`.
+It falls through to the `default:` branch which logs `got_unknown_%d` and immediately
+executes `goto LAB_8009b120` — this exits the TLV parse loop entirely.
+
+```c
+// XPP_Type02_0x07_FlashConfig() — default branch reached for tag 0x12
+default:
+    sprintf(&stack0x00000014, s_got_unknown__d_800bc444, uVar7);
+    wlan_log_debug_info(4, &stack0x00000014, ...);
+    goto LAB_8009b120;   // exits parse loop — NO further tags processed
+```
+
+**Any tags placed after Tag 0x12 in the same packet are never processed.**
+This is a hard parse abort, not a skip-and-continue. The firmware stops reading TLVs.
+
+**Emulator note**: To emulate stock behaviour faithfully, on receiving Tag 0x12 stop
+processing the TLV stream, log the unknown tag, and send the response as-if parsing
+completed. Do not advance to the next tag.
+
+#### WPA/WPA2 Dashboard Key Input Paths
+
+The dashboard has two separate code paths for WPA key input. Which tag is sent depends
+entirely on what the user typed at the on-screen keyboard:
+
+| Input Type | Length Check | Dashboard Path | Tag Sent | Firmware Handles? |
+|------------|-------------|----------------|----------|-------------------|
+| 64 hex chars | Exactly 64 hex-digit wchars | `FUN_00079633` → hex decode → 32-byte PMK → `FUN_000a2d51` | Tag 0x10 (32-byte PMK) | Stub — silently discards |
+| 8–63 ASCII chars | 8 ≤ len ≤ 63, all printable | `FUN_00079633` → raw copy → `FUN_000a2d81` | Tag 0x12 (raw passphrase) | Not handled — parse abort |
+| < 8 or > 63 chars | Rejected | Dashboard shows `WIRELESS_SETTINGS_ERR_INVALID_KEY_FOR_TYPE` | Nothing sent | N/A |
+
+**Note**: The Xbox dashboard never runs PBKDF2 itself. For a 64-hex-char input it sends the
+pre-computed raw key bytes directly as Tag 0x10 (PMK). For a passphrase it sends the
+plaintext as Tag 0x12 and relies on the firmware to derive the PMK — which stock firmware
+cannot do. WPA is therefore completely non-functional with stock firmware regardless of
+which input path is used.
+
+#### WPA/WPA2 Firmware Patch Paths
+
+Two firmware patch paths exist for enabling WPA/WPA2. Neither requires Xbox modification.
+See [WPA/WPA2 Implementation](#wpa-wpa2-implementation) for full details.
+
+| Path | Trigger Tag | Dashboard Action | Firmware Patch Required | Notes |
+|------|-------------|------------------|-------------------------|-------|
+| Path 1 — Store PMK | Tag 0x10 | User enters 64-hex-char key; dash sends 32-byte PMK | Implement `case 0x10` to store PMK and call `ath_hal_set_key_cache_entry()` | Simpler — Xbox already sends valid PMK data |
+| Path 2 — Derive PMK from passphrase | Tag 0x12 | User enters ASCII passphrase; dash sends plaintext | Add `case 0x12` to call `wlan_pbkdf2_pmk_derive()` (already in firmware) | More complex — requires worker task context for 4096-iteration PBKDF2 |
+
+### tag 0x0e Region Code (Tag 0x0E)
+**function**: Affects allowed Wi-Fi channels for regulatory purposes
+**Note**: Missing region code defaults to USA mode (channels 1-11 only).
+
+```
+ Value | Region                  | Allowed Channels (2.4 GHz)
+-------|-------------------------|-----------------------
+ 0x00  | USA / Canada (FCC)      | 1-11
+ 0x01  | Japan (TELEC)           | 1-14
+ 0x02  | Europe (ETSI)           | 1-13
+ 0x03  | Australia / New Zealand | 1-13
+ 0x04  | Korea                   | 1-13
+```
+
+### Tag 0x14 — MAC Address Cloning / Spoofing
+
+**Purpose**: Allows the Xbox to present a cloned MAC address to the ISP's router or modem,
+bypassing MAC-based internet authentication. The cloned MAC is used as the source identity
+for all Layer 2 frames bridged to the WAN.
+
+**Common Use Case (2004)**: Cable and DSL ISPs (particularly PPPoE providers) frequently locked
+internet access to the MAC address of the first device that connected — typically the user's PC.
+When switching to an Xbox, the ISP would reject the new MAC. Cloning the PC's MAC address made
+the adapter invisible to the ISP's MAC-auth system.
+
+**Format**: 6-byte MAC address in standard network byte order.
+
+```
+Tag  | Len | Value
+-----|-----|------
+0x14 | 06  | XX XX XX XX XX XX   (MAC to spoof, network byte order)
+```
+
+**Wire-verified** (`lysten_setmac_host_ppoe_and_connect_to_live.log`):
+
+The MAC spoofing mechanism has now been directly observed on the wire. The log was captured
+with the router/AP **powered off** — the adapter is holding its saved profile (`open_ch9_bg`,
+IP=192.168.1.150, b-only mode) but is not associated with any AP. The adapter hardware MAC
+is `00:12:5a:33:fa:31`. The clone MAC set for ISP bypass is `aa:bb:cc:dd:aa:ff`.
+
+```
+Pkt#1-14:  Normal session
+  HANDSHAKE_REQ src MAC = 00:0d:3a:50:22:73  (real Xbox console NIC)
+  Adapter MAC            = 00:12:5a:33:fa:31  (MN-740 hardware MAC)
+  Saved profile: SSID=open_ch9_bg, IP=192.168.1.150 (not currently connected)
+
+Pkt#15-16: Console re-authenticates (new nonce 0x5c3d), same MAC identity
+
+Pkt#17:    MAC CLONE ACTIVE
+  HANDSHAKE_REQ src MAC = aa:bb:cc:dd:aa:ff  <<< SPOOFED
+  (broadcast to ff:ff:ff:ff:ff:ff as normal, but sourced from the clone MAC)
+```
+
+**Mechanism — how the clone works at Layer 2:**
+
+The MAC spoof operates at the XPP handshake level, not just at the bridge forwarding level.
+When the user configures a clone MAC via the settings XBE, the Xbox console's Ethernet NIC
+begins broadcasting HANDSHAKE_REQ frames sourced from the cloned MAC (`aa:bb:cc:dd:aa:ff`)
+instead of its real hardware MAC. The adapter then:
+
+1. Accepts the HANDSHAKE_REQ from the cloned source MAC
+2. Stores `aa:bb:cc:dd:aa:ff` as `g_NVRAM_Router_MAC` (the paired console MAC identity)
+3. Uses `aa:bb:cc:dd:aa:ff` as the source MAC identity for all subsequent bridged frames
+   sent to the WAN side — making the ISP's router/modem see the cloned PC MAC
+
+The HMAC computation during the handshake uses the **adapter's own hardware MAC**
+(`00:12:5a:33:fa:31`) as its fixed MAC input component regardless of what source MAC
+the HANDSHAKE_REQ arrives from. The HMAC is not re-keyed to the clone identity — the
+HMAC key relationship remains between the adapter and any console that knows the shared
+static key. The clone MAC is purely a Layer 2 forwarding identity, not a cryptographic one.
+
+**Source XBE note**: Tag 0x14 is **not emitted by `xonlinedash.xbe`**. The MAC clone
+setting is configured via the network settings XBE (multi-XBE dashboard architecture).
+The setting XBE instructs the Xbox NIC driver to use the cloned MAC, which then appears
+as the source MAC in all subsequent XPP HANDSHAKE_REQ broadcasts.
+
+**Firmware parser note**: `XPP_Type02_0x07_FlashConfig()` in v1.0.2.26 has no `case 0x14`.
+The mechanism observed on wire operates through the XPP HANDSHAKE path (Type 0x01/0x02),
+not the FlashConfig path (Type 0x07) — so the absence of `case 0x14` in the Type 0x07
+parser is consistent. The clone MAC is implicitly registered when the adapter accepts the
+HANDSHAKE_REQ from the new source MAC identity.
+
+**Related**: Tag 0x82 (`NET_Interface_Reset_And_Reconnect`) reinitialises the network
+interface with the hardware MAC — this would clear a cloned MAC and restore the real identity.
+
+### WPA/WPA2 Hardware Support
+
+**The MN-740 is fully capable of WPA (TKIP) and WPA2 (AES-CCMP) in hardware.** The limitation is
+purely firmware. The hardware was designed for WPA/WPA2 from the start but the firmware was never
+finished.
+
+**Hardware**: The Marvell Libertas 88W8310 security engine is a dedicated hardware block with
+silicon-level AES-Rijndael at 54Mbps, TKIP MIC generation, and a full hardware key cache.
+All of this is confirmed accessible from firmware via `ath_hal_set_key_cache_entry()`,
+`ath_hal_ccmp_aes_encrypt()`, and `wlan_ccmp_decrypt_verify()`.
+
+**Firmware status**: The crypto engine is complete. The EAPOL state machine is present and
+functional. The PBKDF2 derivation function exists as dead code. Two stubs block the full path:
+
+| Gap | Location | What is Missing |
+|-----|----------|-----------------|
+| Gap 1 | `XPP_Parse_Entry()` case 0x10 | PMK received from Xbox but discarded |
+| Gap 2 | `eapol_handle_key_exchange()` | Logs "EAP Failure" and returns immediately. ANonce/SNonce exchange, PTK derivation, MIC verification, and GTK install are all absent. |
+
+See [WPA/WPA2 Implementation](#wpa-wpa2-implementation) for the full patch analysis.
+
+### Related Information
+- [Type 0x08 Response](#10-type-0x08---connect_to_ssid_response)
+
+---
+
+## 10. Type 0x08 - CONNECT_TO_SSID_RESPONSE
+**Direction**: Adapter → Xbox  
+**Transport**: Ethernet 0x886f  
+**HMAC Required**: No
+
+### Brief Description
+Confirms connection request result.
+
+### Packet Format
+```
+Total size: (14 Ethernet + 12 xpp Header + 4 payload + padding) = 30 bytes
+Body size:  (12 xpp header + 4 payload + padding) / 4 = 4 DWORDS
+
+Size (Bytes) | Segment          | Description
+-------------|------------------|--------------------------------
+14 bytes     | Ethernet header  | Standard Header
+12 bytes     | XPP Header       | Type 0x08, , body size = 0x04 DWORDS
+1 Bytes      | Payload          | response payload
+3 bytes      | Null/Padding     | Zeros to pad the payload to match body size
+```
+
+### Result Codes
+```
+Result code | Description / Value
+------------|---------------------
+0x00        | Success - Connection initiated
+0x01        | Invalid SSID
+0x02        | Invalid password
+0x03        | Network not found
+0x04        | Authentication failed
+0x05        | Timed Out
+0xFF        | General error
+```
+
+## TFTP Firmware Upgrade
+**Transport**: UDP port 69 (standard TFTP)
+**State Requirement**: None — port 69 is opened unconditionally at boot.
+
+### How TFTP Becomes Available
+`net_main_task()` calls `xpp_check_firmware_update_status()` as a fixed step
+during boot, before DHCP, before any Xbox connection exists:
+
+    net_main_task()
+      └─ xpp_check_firmware_update_status()
+           ├─ xpp_sync_connection_status()   ← registers auth callbacks
+           └─ xpp_sync_radio_state()
+                └─ UDP_Socket_Open(port 69, callback=xpp_udp_packet_dispatcher)
+
+TFTP is listening from power-on. No XPP handshake, no beacon exchange,
+no pairing is required to reach it.
+
+### TFTP Upgrade Sequence
+1. Power on adapter — TFTP server is already listening on UDP port 69.
+2. Send TFTP WRQ for filename `"image"` in `"octet"` or `"image"` mode.
+3. Transfer firmware blocks (512 bytes each, RFC 1350).
+4. Adapter writes blocks via `xpp_vfs_write_payload()`, validates on completion.
+5. Automatic reboot with new firmware.
+
+### TFTP Protocol Details
+- **Block Size**: 512 bytes (0x200) — firmware constant `TFTP_Block_size`
+- **Transfer modes accepted**: `"image"`, `"octet"` (binary), `"netascii"` (text)
+- **Auth header**: Non-standard 58-byte prefix before the TFTP payload (see below)
+- **WRQ auth**: None — the firmware upload path performs no credential check
+- **RRQ auth**: MAC check + HMAC-SHA1 (applies only when reading files FROM the adapter)
+
+### XPP TFTP Payload Format
+```
+Offset | Size     | Description
+-------|----------|------------------------------------------
++0x00  | 6 bytes  | Source MAC address
++0x06  | 32 bytes | Unknown — not read by firmware (skipped)
++0x26  | 20 bytes | HMAC-SHA1 token (RRQ auth only — see below)
++0x3a  | variable | Standard RFC 1350 TFTP packet
+```
+Total auth header: **58 bytes (0x3a)**
+
+### Standard TFTP Packet (at +0x3a)
+```
+[2 bytes opcode][filename\0][mode\0][data...]
+```
+
+### Auth Logic — RRQ Only (Reading FROM Adapter)
+Firmware function: `XPP_Secure_Config_Update()`, registered as `g_XPP_Link_State`.
+
+Called for all new TFTP connections. Branches on opcode:
+
+- **WRQ (opcode 2) — firmware upload**: logs `"tftpd_put"`, returns immediately.
+  No MAC check. No HMAC check. No credential of any kind.
+- **RRQ (opcode 1) — reading from adapter**: performs two checks in sequence:
+  1. `wlan_mac_addr_equal(packet+0x00, g_ROUTER_MAC_ADDRESS, 6)` — source MAC must
+     match the paired router MAC, or transfer is logged as `"mac_error"` and refused.
+  2. HMAC-SHA1 of `G_XPP_Admin_Identity` (default: `"admin"`) using `g_XPP_HMAC_Key`,
+     compared against the 20 bytes at `packet+0x26`. Mismatch = `"password_error"`.
+  Both checks must pass for the RRQ to be accepted.
+
+### TFTP Credentials
+- **Default username**: `"admin"` (stored in `G_XPP_Admin_Identity`)
+- **Default password**: `"admin"` (stored in `G_XPP_Identity_Password`) — not used
+  by the TFTP HMAC check, which signs the *username* string only
+- Both reset to `"admin"` on factory reset
+- Username can be changed via Table B Tag 0x03 in a Type 0x07 packet
+
+### Security Notes
+**WRQ has no access control.** Any host that can reach UDP port 69 can flash new
+firmware. The port opens at boot with no prerequisite.
+
+**RRQ auth is a fixed credential.** The HMAC at +0x26 is `HMAC-SHA1("admin")` using
+the static ROM key `g_XPP_HMAC_Key`. Because both the input string and the key are
+fixed constants, the correct value never changes. Anyone with the extracted firmware
+key can compute it offline without ever interacting with the adapter.
+
+**Paired vs unpaired behaviour (RRQ only):**
+- Unpaired adapter: `g_ROUTER_MAC_ADDRESS` is all-zeros. The MAC check at step 1
+  passes for any source — only the HMAC check applies.
+- Paired adapter: source MAC must match the stored router MAC before the HMAC
+  check is even attempted.
+
+### Related Information
+- [Type 0x07 Request](#9-type-0x07---connect_to_ssid_request)
+
+---
+
+## 11. Type 0x08 - ASSOCIATE (UDP)
+
+**Direction**: Xbox → Adapter  
+**Transport**: UDP port 2002
+**HMAC Required**: No
+
+### Brief Description
+Network reachability validation (Ping/ARP check) after connection.
+
+**⚠️ Same type value (0x08) but different transport than Ethernet 0x08!**
+
+**⚠️ Reply type byte is 0x00, not 0x08**: The firmware zeroes the XPP type byte before retransmitting — the echo reply carries type `0x00`, not `0x08`.
+
+### Packet Format
+```
+Total size: (28 IP/UDP + 12 XPP Header + Payload) = Variable
+Body size:  (12 xpp header + Payload) / 4 = N DWORDs
+
+Size (Bytes) | Segment          | Description
+-------------|------------------|--------------------------------
+28 bytes     | IP/UDP Header    | Standard IPv4 (20b) + UDP (8b)
+12 bytes     | XPP Header       | Type 0x08, body size = Variable
+Variable     | Network Payload  | Usually contains a standard ICMP Ping or ARP
+```
+
+### Payload Structure
+Variable (ping/ARP validation data)
+
+### Behavior
+**Firmware Function**: Triggers internal `s_Arping_for_host` function
+
+- Sent after Type 0x08 Ethernet connect response
+- Validates network layer reachability
+- Must respond to prove adapter is on network
+- Usually sent 2-3 seconds after connection
+
+**Note**: The payload contents are inferred from the firmware function `s_Arping_for_host` — likely an ARP or ICMP ping, but unconfirmed. It is also unknown whether the Xbox sends a nonce or session identifier in the payload.
+
+### Related Information
+- [Type 0x08 Ethernet Response](#10-type-0x08---connect_to_ssid_response)
+- [UDP Discovery](#udp-discovery-implementation)
+
+---
+
+## 12. Type 0x09 - BEACON_REQUEST
+**Direction**: Xbox → Adapter  
+**Transport**: Ethernet 0x886f  
+**HMAC Required**: no
+
+### Brief Description
+Keepalive heartbeat sent every 1 second.
+
+### Packet Format
+```
+Total size: (14 Ethernet + 12 XPP Header) = 26 bytes
+Body size:  (12 XPP header) / 4 = 3 DWORDS
+
+Size         | Segment          | Description
+-------------|------------------|--------------------------------
+14 bytes     | Ethernet header  | Standard Header
+12 bytes     | XPP Header       | Type 0x09, body size = 0x03 DWORDS
+```
+
+### Timing
+- **Interval**: Every 1 second while connected
+- **Timeout**: 5 seconds without response → adapter disconnected
+- **Recovery**: Requires full handshake restart (Type 0x01)
+
+### 30-Second Watchdog System ⚠️ CRITICAL
+
+**Firmware Function**: `NET_Interface_Watchdog` at `0x8000a10c`
+
+The adapter doesn't just wait for Type 0x09 beacons. It monitors **ANY valid Ethernet frame** from the paired Xbox MAC address.
+
+**If no traffic seen for 30 seconds**:
+1. Calls `net_set_error_state`
+2. Shuts down Wi-Fi radio
+3. Enters low-power mode
+4. Requires full re-authentication (Type 0x01 handshake)
+
+**Emulator Impact**: You must maintain an "active heartbeat" by either:
+- Sending Type 0x09 beacons every 1 second (normal mode)
+- OR sending any valid Xbox protocol packet within 30 seconds
+- OR simulating ARP/ping traffic to reset watchdog
+
+**Failure Mode**:
+```
+Adapter logs: "Watchdog timeout - Xbox MAC aa:bb:cc:dd:ee:ff inactive"
+Adapter action: Radio shutdown, connection state = ERROR
+Xbox UI: "Connection lost - adapter not responding"
+Recovery: Full Type 0x01 → 0x02 handshake restart required
+```
+
+### Tags
+None (fixed structure)
+
+### ⚠️ Wire Observation — `09 01` bytes in ADAPTER_INFO_REQ are NOT beacon-related
+When inspecting captures (e.g. Packet #112 in `lysten_open_connect_with_wan_ch_3_a.log`), the byte sequence
+`09 01` appears inside the **Type 0x05 ADAPTER_INFO_REQ** payload. This is **not** related to the Type 0x09 BEACON_REQUEST.
+
+The Type 0x05 payload is a counted array of `[Tag][Length Hint]` pairs. The `09 01` there decodes as:
+- `0x09` = Table A Tag ID for **Link State**
+- `0x01` = Length hint (1 byte response expected)
+
+The Xbox routinely requests 9 tags in one Type 0x05 call (tag count = `0x09`), with Tag `0x09` (link state)
+being the 8th entry in the array. The coincidence of the tag count (`0x09`) and the tag ID (`0x09`) in
+the same payload can make the stream appear ambiguous on first inspection.
+
+**The Type 0x09 BEACON_REQUEST itself carries zero payload** — it is exactly 26 bytes: 14-byte Ethernet
+header + 12-byte XPP header with no data following. Any `09 01` bytes observed are always within a
+Type 0x05/0x06 TLV stream, never inside a beacon packet.
+
+**Wire-verified**: Packet #112 ADAPTER_INFO_REQ full TLV request array:
+```
+Payload:00 09 | 01 04 | 02 01 | 04 01 | 05 01 | 06 06 | 07 20 | 08 01 | 09 01 | 11 01 | 00 00 00
+        ↑  ↑    ↑       ↑       ↑       ↑       ↑       ↑       ↑       ↑       ↑       ↑
+        |  |    Tag01   Tag02   Tag04   Tag05   Tag06   Tag07   Tag08  [Tag09] Tag11   padding
+        |  Tag count=9                                                   ↑
+        Firmware Artifact
+                                                         Link State tag — this is the "09 01"
+```
+
+### Related Information
+- [Type 0x0a Response](#13-type-0x0a---beacon_response)
+
+---
+
+## 13. Type 0x0A - BEACON_RESPONSE
+
+**Direction**: Adapter → Xbox  
+**Transport**: Ethernet 0x886f  
+**HMAC Required**: No
+
+### Brief Description
+Response to Type 0x09 keepalive. Returns current authentication status, smoothed signal strength,
+and a raw hardware TX state byte. Sent within ~100ms of receiving a Type 0x09.
+
+**Triggered by**: Type 0x09
+
+### Packet Format
+```
+Total size: (14 Ethernet + 12 XPP Header + 4 Payload + 16 Padding) = 46 bytes
+Body size:  (12 XPP Header + 4 Payload) / 4 = 0x04 DWORDs
+
+Size (Bytes) | Segment          | Description
+-------------|------------------|--------------------------------
+14 bytes     | Ethernet header  | Standard header
+12 bytes     | XPP Header       | Type 0x0A, body size = 0x04 DWORDs
+4  bytes     | Payload          | auth_status, smoothed_rssi, hal_tx_state, reserved
+16 bytes     | Firmware padding | ⚠ Never written — uninitialised memory (firmware bug)
+```
+
+### Payload Structure (4 bytes)
+```
+ Offset | Size | Firmware Source               | Field Name/ Description                                                  |
+--------|------|-------------------------------|-----------------------------------------------------------------------------|
+ 0      | 1    | `XPP_Check_Auth_Status()`     | auth_status   authentication Status
+ 1      | 1    | `drvr_get_smoothed_rssi()`    | smoothed_rssi  Smoothed rssi value
+ 2      | 1    | `drvr_get_tx_rate_code()`     | tx_rate_code   Raw 802.11 rate code masked `& 0x7f` (basic-rate bit stripped) |
+ 3      | 1    | hardcoded                     | reserved       Always `0x00`                                               |
+```
+### ⚠ Firmware Bug — 16-byte Uninitialised Padding
+Bytes 4–19 are a zero-filled pre-allocation artefact. The packet buffer is cleared to
+`0x00` by `memset(0, 0x5ee)` before the builder runs. The body size field correctly
+covers only the 4-byte payload (`0x04 DWORDs`). Implementations should tolerate and
+ignore this trailing data.
+
+**note**: The body size is calculated dynamically but the payload is always 4 bytes, so the body size will always be 0x04 DWORDs.
+
+### Auth State (Byte 0)
+```
+Return | Name                            | Condition
+-------|---------------------------------|------------------------------------------------------
+0x00   | Authenticated                   | wlan_get_connection_readiness() == 0 AND CRYPTO_Get_Hardware_ID() matches g_ROUTER_MAC_ADDRESS
+       |                                 | ⚠ Also seen transiently mid-association on open networks (wire-verified)
+0x01   | Associating                     | wlan_get_connection_readiness() == 1
+0x02   | Idle / Open-linked              | Default (not connected, past boot, not in TLV parse)
+       |                                 | ⚠ Also observed on fully connected open networks — not exclusively idle
+0x03   |802.11 association in progress   | TLV parser active, OR early boot (< 400 uptime ticks)
+       |                                 | transitions from 0x02→0x03 after WEP CONNECT_REQ committed
+       |                                 |   (lysten_wep_secured_128_bit_ascii.log Pkt#14, lysten_wep_secured_64_bit_ascii.log Pkt#14)
+```
+
+### Smoothed_rssi (Byte 1)
+
+```
+return | Description / Value
+------------|---------------------
+0x80        | pre seed buffer state (-128)
+0xBA        | seed value (-70)
+other       | smoothed RSSI value
+
+```
+**Note**: byte 44 signal RSSI has custom scaling see [Signal strength / link quality scaling)](Signal strength / link quality scaling)
+**Note**: Signed byte = 10-sample rolling average of `(driver_ctx[0x273] − 0x5f)` when authenticated.
+Seed value `0xba` (-70) written explicitly when not authenticated (firmware-verified).
+Value `0x80` (-128) is wire-observed pre-association default; `g_RSSI_Smoothed_Output` is an
+uninitialised global — `0x80` is not written by firmware, it reflects BSS/memory state.
+
+### Raw 802.11 rate code masked `& 0x7f` (basic-rate bit stripped) (Byte 2)
+```
+Result code | Description/ value
+------------|---------------------
+0x00        | Not associated / no data frame sent
+0x02        | 1 Mbps (802.11b)
+0x04        | 2 Mbps (802.11b)
+0x0B        | 5.5 Mbps (802.11b)
+0x16        | 11 Mbps (802.11b)
+0x0C        | 6  Mbps (802.11g)
+0x12        | 9  Mbps (802.11g)
+0x18        | 12 Mbps (802.11g)
+0x24        | 18 Mbps (802.11g)
+0x30        | 24 Mbps (802.11g)
+0x48        | 36 Mbps (802.11g)
+0x60        | 48 Mbps (802.11g)
+0x6C        | 54 Mbps (802.11g)
+```
+
+### reserved (Byte 3)
+```
+Result code | Description/ value
+------------|---------------------
+  0x00      | hardcoded reserved
+```
+
+### ⚠ Rate limit Cap (Firmware-Verified)
+The firmware enforces a hardware rate cap in ad-hoc mode:
+- **Not Linked**:     tx_rate_code = `0x16` (11 Mbps) — returned as the pre-association / not-yet-linked default rate
+- **Infrastructure**: tx_rate_code = `0x6C` (54 Mbps) — No Rate limit
+- **Ad-hoc**:         tx_rate_code = `0x16` (11 Mbps) — hardcoded ceiling
+This is a deliberate firmware design decision for BSS stability and Hidden Node collision avoidance. See Tag 0x07 section for full explanation.
+
+### Wire-Verified Payload Examples
+```
+[Packets #4,#6,#8 - Before CONNECT_REQ (lysten_wep_secured_128_bit_ascii.log)]
+02 80 60 00  →  auth=0x02(open/idle), rssi=0x80(-128 pre-seed), rate=0x60(48Mbps), reserved=0x00
+
+[Packets #14+ - After WEP CONNECT_REQ committed (lysten_wep_secured_128_bit_ascii.log)]
+03 80 60 00  →  auth=0x03(802.11 association in progress), rssi=0x80(-128 pre-seed), rate=0x60(48Mbps), reserved=0x00
+
+[Packets #4,#6,#8 - Before CONNECT_REQ (lysten_wep_secured_64_bit_ascii.log)]
+02 80 16 00  →  auth=0x02(open/idle), rssi=0x80(-128 pre-seed), rate=0x16(11Mbps), reserved=0x00
+
+[Packets #14+ - After WEP CONNECT_REQ committed (lysten_wep_secured_64_bit_ascii.log)]
+03 80 16 00  →  auth=0x03(802.11 association in progress), rssi=0x80(-128 pre-seed), rate=0x16(11Mbps), reserved=0x00
+
+[Packet #138 - After ad-hoc reconnect (lysten_adhoc.log)]
+02 80 16 00  →  auth=0x02(open/idle), rssi=0x80(-128 disconnected), rate=0x16(11Mbps cap), reserved=0x00
+
+[Packets #2–#10 - Open network CH3 WAN connected (lysten_open_connect_with_wan_ch_3_new.log)]
+02 80 6c 00  →  auth=0x02(open network connected), rssi=0x80(-128 pre-seed), rate=0x6C(54Mbps), reserved=0x00
+⚠ NOTE: auth=0x02 on a fully-connected open network confirms 0x02 is NOT exclusively "idle" —
+it is the steady-state auth byte for open/unencrypted connections. Only WEP transitions to 0x03.
+
+[Packet #12 - Status change event during connection (lysten_open_connect_with_wan_ch_3_new.log)]
+d5 82 00 d7  →  auth=0xd5(?), rssi=0x82, rate=0x00(not assoc), reserved=0xd7
+⚠ NOTE: This transient packet appears once during link-up negotiation — fields are in flux.
+
+[Packet #36/38 - After reconnect, BSSID acquired (lysten_open_connect_with_wan_ch_3_new2.log)]
+08 e8 00 d7  →  auth=0x08(?), rssi=0xe8, rate=0x00(not associated), reserved=0xd7
+⚠ NOTE: These transient values appear briefly during re-association. The reserved byte (Byte 3)
+is NOT always 0x00 in these transitional states — the firmware memset may not cover this region.
+```
+**Rate code correction (v11.0)**: The old `lysten_open_connect_with_wan_ch_3.log` showed rate=`0x16` (11 Mbps)
+in early post-connect beacons due to an incorrect Ghidra label on the rate function. The corrected Ghidra
+analysis and new logs confirm rate=`0x6c` (54 Mbps) is the correct infrastructure value once the
+radio associates. `0x16` is the correct value only for ad-hoc mode and the pre-association default.
+
+### Dashboard Handler — `my_handle_beacon_response` (Assembler-Verified)
+
+**Source**: `xonlinedash_xbe.c` @ `0x000a3563`, called from `my_fetch_wireless_adapter_data_p`.
+
+#### Validation (fail → return 0)
+```
+[ESI+0x07] == 0x0a          ← XPP type must be BEACON_RESP
+[ESI+0x06] << 2 == 0x10     ← body_dwords must == 0x04 (fixed 4-byte payload)
+body byte[0] <= 0x03         ← CMP AL,0x03 / JA error — values > 0x03 rejected
+```
+
+#### Pre-switch call
+Before the state switch, `FUN_000a2af6(byte[0], byte[1])` is called for all valid packets.
+Its return value is discarded. Purpose: likely RSSI smoothing or beacon statistics — assembler
+for `FUN_000a2af6` needed to confirm.
+
+#### State Switch on body byte[0] → AutoClass1 fields (ECX = AutoClass1)
+
+| body[0] | Condition | ECX+0x3c | ECX+0x48 | ECX+0x49 |
+|---------|-----------|----------|----------|----------|
+| 0x01    | —         | 0x01     | 0x80     | body[1]  |
+| 0x02    | —         | 0x02     | 0x80     | body[1]  |
+| 0x03    | —         | 0x03     | 0x80     | body[1]  |
+| 0x00    | body[1] < 0xa6 | 0x02 | 0x80    | body[1]  |
+| 0x00    | body[1] ≥ 0xa6 | 0x00 | body[1] | body[2]  |
+
+**Note on case 0x00 / body[1] ≥ 0xa6**: DL is zero (zeroed by `XOR EDX,EDX` before the
+pre-switch call, never reloaded). So `ECX+0x3c = 0x00`, not body[1]. body[1] goes to
+`ECX+0x48` (raw RSSI), body[2] goes to `ECX+0x49`.
+
+#### Post-switch writes (all cases)
+```
+[ECX+0x40] = 0x00000000               ← always zero (EDX never changed from XOR EDX,EDX)
+[ECX+0x44] = ([ECX+0x3c] != 0x03)     ← SETNZ: 1=infrastructure/scanning, 0=ad-hoc
+return 1 (success)
+```
+
+#### AutoClass1 Field Map (from this function)
+
+| Offset | Size | Name | Values |
+|--------|------|------|--------|
+| +0x3c | 1 byte | `xpp_link_state` | 0x00=state0, 0x01=pre-assoc, 0x02=associated ✓, 0x03=ad-hoc |
+| +0x40 | 4 bytes | (cleared) | Always written 0x00000000 |
+| +0x44 | 4 bytes | `is_infrastructure` | 1 = not ad-hoc, 0 = ad-hoc (SETNZ on state≠0x03) |
+| +0x48 | 1 byte | `rssi_upper` | 0x80 sentinel (cases 1/2/3), raw body[1] (case 0/≥0xa6) |
+| +0x49 | 1 byte | `rssi_lower` | body[1] (cases 1/2/3), body[2] (case 0/≥0xa6) |
+
+#### Wire cross-check
+```
+Body '02 80 6c 00' → CASE 0x02 → xpp_link_state=0x02, rssi_upper=0x80, rssi_lower=0x80
+                                  is_infrastructure=1  ← normal connected state ✓
+Body '03 80 60 00' → CASE 0x03 → xpp_link_state=0x03, rssi_upper=0x80, rssi_lower=0x80
+                                  is_infrastructure=0  ← ad-hoc ✓
+Body '01 80 16 00' → CASE 0x01 → xpp_link_state=0x01, rssi_upper=0x80, rssi_lower=0x80
+                                  is_infrastructure=1  ← pre-association ✓
+```
+
+### Related Information
+- [Type 0x09 Request](#11-type-0x09---beacon_request)
+- [Connection Workflows](#connection-workflows)
+
+---
+
+## 14. Type 0x0B - SILENTLY_DROPPED
+**Direction**: Any → Adapter  
+**Transport**: Ethernet 0x886f  
+**HMAC Required**: N/A
+
+### Brief Description
+**Firmware-verified**: The dispatcher silently drops any Type 0x0B packet and increments an internal counter g_CNT_XPP_TYPE_0B @ `800ce0f8`.
+ No response is sent. This type is undocumented — it is an unused slot possibly for future expansion.
+
+---
+
+## 15. Type 0x0C - SILENTLY_DROPPED
+**Direction**: Any → Adapter  
+**Transport**: Ethernet 0x886f  
+**HMAC Required**: N/A
+
+### Brief Description
+**Firmware-verified**: The dispatcher silently drops any Type 0x0C packet and increments an internal counter at g_CNT_XPP_TYPE_0C @ `800ce0fc`.
+No response is sent. This type is undocumented — it is an unused slot possibly for future expansion.
+
+---
+
+
+## 16. Type 0x0d - DISCOVERY
+**Direction**: Xbox → Broadcast (255.255.255.255:2002)  
+**Transport**: UDP port 2002  
+**HMAC Required**: No
+
+### Brief Description
+Broadcast discovery to find all adapters on network.
+
+### Packet Format
+```
+Total: 12 bytes (UDP payload only)
+[12 bytes] XPP Header (Type 0x0d, body size = 0x03 DWORDs)
+[0 bytes]  No payload
+```
+
+### Behavior
+- Xbox broadcasts to entire local subnet
+- All adapters on network respond with Type 0x0e
+- Used during initial adapter detection
+
+### Related Information
+- [Type 0x0e Response](#16-type-0x0e---discovery_response)
+
+---
+
+## 17. Type 0x0e - DISCOVERY_RESPONSE
+**Direction**: Adapter → Xbox (unicast to requesting IP)  
+**Transport**: UDP port 2002  
+**HMAC Required**: No
+
+### Brief Description
+Provides adapter identity for pairing.
+
+### Packet Format
+```
+Total: 40 bytes (UDP payload only)
+
+[12 bytes] XPP Header (Type 0x0e, body size = 0x0A DWORDs)
+[28 bytes] Adapter identity payload
+```
+
+### Payload Structure
+```
+Offset | Size | Field              | Description
+-------|------|--------------------|------------------
+0-5    | 6    | Adapter MAC        | e.g., 00:12:5a:33:fa:31
+6-9    | 4    | Reserved/Status    | 0x00 0x00 0x00 0x00
+10-15  | 6    | Associated Xbox MAC| From mac.dat pairing
+16-27  | 12   | Reserved/padding   | Zeros
+```
+
+### Related Information
+- [Type 0x0d Request](#15-type-0x0d---discovery)
+
+---
+
+## 18. Type 0x0F - SILENTLY_DROPPED
+**Direction**: Any → Adapter  
+**Transport**: Ethernet 0x886f  
+**HMAC Required**: N/A
+
+### Brief Description
+**Firmware-verified**: The dispatcher silently drops any Type 0x0F packet. No response is sent, no counter is incremented, and nothing is logged — completely silent. This type is undocumented.
+
+---
+
+## 19. Type 0x11 - WPA_ASSOC / WPA_EXCHANGE
+
+**Direction**: Bidirectional (Console→Adapter and Adapter→Console)  
+**Transport**: `net_dispatch_arp` (magic `0x4954454e` "NETI" outbound, `0x4b54454e` "NETK" reply)  
+**HMAC Required**: No  
+⚠️ **This is NOT a standard XPP management packet**. Type 0x11 uses a different frame builder (`net_dispatch_arp`) and a different internal header layout from all other packet types. It is a fully bidirectional sub-protocol used exclusively for WPA authentication.
+
+### Brief Description
+
+Type 0x11 carries the WPA association and credential exchange flow between the console and adapter. The console sends `WPA_ASSOC_REQ` to begin association. The adapter must then send type 0x11 frames back to drive the console FSM through IP negotiation, the 4-way handshake, and final IP config delivery. Without adapter-originated type 0x11 frames the console FSM stalls in state 0x11 until timeout.
+
+### Packet Format
+
+```
+Total size: variable (26-byte combined header + payload)
+
+Size         | Segment              | Description
+-------------|----------------------|---------------------------------------------
+6  bytes     | Destination MAC      | Broadcast (FF:FF:FF:FF:FF:FF) or unicast AP MAC
+6  bytes     | Source MAC           | Console MAC (field_0x1b0[+0x30..+0x35])
+2  bytes     | Frame type word      | 0x6388 normal; 0x123c if fsm_state_flags&0x80 or first of double-send
+1  byte      | Type marker [+0x0e]  | 0x11 (constant)
+1  byte      | Sub-type  [+0x0f]    | Direction/state indicator (see Sub-type table)
+2  bytes     | Reserved  [+0x10]    | 0x0000
+2  bytes     | Length    [+0x12]    | Big-endian total payload length
+2  bytes     | Reserved  [+0x14]    | 0x0000
+variable     | Payload              | Sub-TLVs (format: [tag:1][len:1][data:len])
+```
+
+> **Frame type word `0x6388` vs `0x123c` — source-verified selection logic:**
+> When `wpa_assoc_retry != 0` in state 0x11, the function sends the packet **twice** in one call (`local_c` starts at 2, loops down to 0). The selector per iteration is:
+> ```c
+> if ((fsm_state_flags & 0x80) || local_c == 2) uVar8 = 0x123c; else uVar8 = 0x6388;
+> ```
+> The **first** packet (local_c == 2) always uses `0x123c`; the **second** (local_c == 1) uses `0x6388` unless `fsm_state_flags & 0x80` forces `0x123c` on both. On a normal single-send (local_c starts at 1) with `fsm_state_flags & 0x80` clear, `0x6388` is always used.
+
+```
+Value | Direction       | FSM State | Meaning
+------|-----------------|-----------|------------------------------------------
+0x09  | Console→Adapter | 0x11      | WPA_ASSOC_REQ first attempt (broadcast)
+0x19  | Console→Adapter | 0x12      | WPA_ASSOC_REQ retry (unicast to AP MAC)
+0x01  | Console→Adapter | 0x13–0x15 | Credential/IP exchange reply (outbound sub-type)
+0x01  | Adapter→Console | any       | IP/DHCP negotiation frame
+0x02  | Adapter→Console | any       | IP/DHCP negotiation frame (variant)
+0x03  | Adapter→Console | any       | IP/DHCP negotiation frame (variant)
+0x04  | Adapter→Console | any       | IP/DHCP negotiation frame (variant)
+0x09  | Adapter→Console | any       | ANonce delivery
+0x05, 0x07, 0x08 | —   | —         | ⚠ Triggers xpp_fsm_fatal_error — connection abort (NOT a silent drop)
+```
+
+> **Sub-type byte derivation (source-verified):**
+> `xpp_build_wpa_assoc_request` computes the sub-type as `(!bVar15 - 1U & 0xF0) + 0x19` where `bVar15 = (fsm_state == 0x11)`.
+> - State 0x11 (bVar15=true): `(0 - 1) & 0xF0 = 0xF0`, `0xF0 + 0x19 = 0x109` → **byte truncates to `0x09`**
+> - State 0x12 (bVar15=false): `(1 - 1) & 0xF0 = 0x00`, `0x00 + 0x19` = **`0x19`**
+>
+> The value `0xF9` is **mathematically impossible** from this expression for any bool input. Verified identically in both the XPP and XNET namespace copies of the function.
+
+### Frame Type Word (Sub-Protocol Selector)
+
+The **frame type word** in the payload selects which sub-protocol is active. Three sub-protocols exist within type 0x11:
+
+```
+Frame Type Word | Sub-Protocol                          | FSM States
+----------------|---------------------------------------|------------------
+0x21c0          | DHCP/IP negotiation + WPA challenge   | 0x13
+0x23c0          | WPA 4-way ANonce/SNonce exchange      | 0x14 (retransmit)
+0x2180          | Post-auth IP configuration delivery   | 0x15
+```
+
+---
+
+### Console→Adapter: WPA_ASSOC_REQ (FSM States 0x11 / 0x12)
+
+**Source function**: `xpp_build_wpa_assoc_request`  
+**Transport magic**: `0x4954454e` ("NETI")
+
+#### Packet Format — First Attempt (State 0x11)
+
+```
+Size         | Field                | Value / Source
+-------------|----------------------|--------------------------------------------------------------
+6  bytes     | Destination MAC      | FF:FF:FF:FF:FF:FF (broadcast)
+6  bytes     | Source MAC           | field_0x1b0[+0x30..+0x35]
+2  bytes     | Frame type word      | 0x6388
+1  byte      | Type marker          | 0x11
+1  byte      | Sub-type             | 0x09  (state 0x11 first attempt)
+2  bytes     | Reserved             | 0x0000
+2  bytes     | Length               | Big-endian: (SSID_len + 8) << 8
+2  bytes     | Reserved             | 0x0000
+```
+
+#### Payload — First Attempt (State 0x11)
+
+```
+Offset   | Size    | Field        | Value / Source
+---------|---------|--------------|--------------------------------------------------------------
++0x00    | 2 bytes | Sub-tag      | 0x0101 — SSID sub-record type
++0x02    | 2 bytes | Length       | Big-endian SSID length
++0x04    | N bytes | SSID data    | Raw bytes from AutoClass1+0xa0a (wpa_assoc_ssid, max 40B)
++0x04+N  | 2 bytes | Sub-tag      | 0x0301 — state counter sub-record type
++0x06+N  | 2 bytes | Length       | 0x0400 (length = 4)
++0x08+N  | 4 bytes | Counter      | AutoClass1+0xa78 (state_change_counter / dhcp_flags_a)
+```
+
+#### Payload — Retry (State 0x12, wpa_anonce_ptr != null)
+
+The SSID sub-TLV is replaced by ANonce material. Destination MAC changes to unicast AP MAC.
+
+```
+Offset   | Size    | Field        | Value / Source
+---------|---------|--------------|--------------------------------------------------------------
++0x00    | 2 bytes | Sub-tag      | 0x0101 — same tag, different data
++0x02    | 4 bytes | Length       | *wpa_anonce_ptr (first dword = ANonce byte count)
++0x06    | N bytes | ANonce data  | wpa_anonce_ptr[1..] (the ANonce bytes)
++0x06+N  | 2 bytes | Sub-tag      | 0x0301 — state counter (unchanged)
++0x08+N  | 2 bytes | Length       | 0x0400
++0x0A+N  | 4 bytes | Counter      | AutoClass1+0xa78
+```
+
+**Note**: `wpa_assoc_ssid` at `AutoClass1+0xa0a` is populated by `xpp_credential_block_copy` from profile offset `+0x3c`. Maximum 40 bytes, NUL-terminated.
+
+---
+
+### Adapter→Console: WPA Exchange Frames (FSM States 0x13–0x15)
+
+**Inbound handler**: `xpp_wpa_inbound_frame_handler` (`FUN_0013e9c5`)  
+**Sub-TLV parser**: `xpp_wpa_subtlv_parser` (`FUN_0013d3e5`)
+
+#### Acceptance Guards
+
+The console **discards** any inbound type 0x11 frame if any of the following are true:
+
+```
+Guard | Condition                                               | Result
+------|---------------------------------------------------------|--------
+1     | Payload length word [EDI+4] < 4                        | Discard
+2     | Byte-swapped length does not fit within declared length | Discard
+3     | AutoClass1+0x8c8 (FSM state) < 0x13                   | Discard
+4     | Sub-type byte is 0x05, 0x07, or 0x08                   | Fatal error — calls `xpp_fsm_fatal_error` (connection abort)
+```
+
+⚠️ Frames arriving while the console is in states 0x11 or 0x12 are silently dropped — the console is not yet ready to receive adapter frames at that point.
+
+#### Sub-type Routing
+
+```
+Sub-type  | Requirement                                  | Console Action
+----------|----------------------------------------------|--------------------------------------------------
+0x09      | frame_type==0x21c0, len≥8, +0xa38==0x04     | ANonce delivery → reply via xpp_wpa_outbound_frame_builder (tag=0x0a)
+0x01–0x04 | —                                            | IP/DHCP negotiation:
+          |                                              |   1. Read pass: parse sub-TLVs via xpp_wpa_subtlv_parser
+          |                                              |   2. If sub-type==0x01 and FSM==0x14: call xpp_fsm_wpa_state_setup(0x13)
+          |                                              |   3. Set bit 0x04 in AutoClass1+0xa7a
+          |                                              |   4. Write pass: generate reply sub-TLVs
+          |                                              |   5. Send reply frame via xpp_wpa_outbound_frame_builder (sub-type=0x01)
+          |                                              |   6. If local_10[0]==0x02→0x04: call xpp_fsm_wpa_state_setup(0x14/0x15)
+0x05,0x07,0x08 | —                                       | Hard-coded **fatal error**: calls `xpp_fsm_fatal_error(this, 0xa0000000)` — aborts WPA session, NOT a silent drop. An adapter emulator must never send these sub-types.
+```
+
+> **Progress counter pointer (`local_10`) — source-verified:**
+> Inside `FUN_0013e9c5`, `local_10` points to the in-progress state byte:
+> - `frame_type == 0x21c0` → `local_10 = this + 0xa38` (`wpa_handshake_flags[0]`)
+> - all other frame types → `local_10 = this + 0xa3d` (`wpa_handshake_flags[5]`)
+>
+> This byte tracks negotiation progress through values `0x01`→`0x02`→`0x03`→`0x04`. Value `0x04` means that exchange is complete and `local_10` changes stop being applied. The two separate counters allow simultaneous tracking of 0x21c0-path and 0x2180-path progress.
+```
+
+#### Sub-TLV Tags — frame_type 0x21c0 (IP Negotiation / WPA Challenge)
+
+Sub-TLV format: `[tag:1 byte][len:1 byte][data:len bytes]`
+
+```
+Tag  | Len | Direction  | Field                | Console Action / Storage
+-----|-----|------------|----------------------|------------------------------------------------------
+0x01 | 4   | A→C        | Proposed IP address  | dir=1: confirmed IP → AutoClass1+0xa40
+     |     |            |                      | dir≠1: proposed IP → +0xa3e, or error bit 0x02 @ +0xa39
+0x05 | 6   | A→C        | DHCP transaction     | dir=1 + matches +0xa44: reply NOT(value) → return 2
+     |     |            | nonce                | dir≠1: generate nonce via net_prng() → store to +0xa44
+0x03 | ≥4  | A→C        | Challenge/response   | len=4 + value=0x23c0 → challenge match
+     |     |            | token                | len=5 + value=0x23c2 + byte[4]=0x05 → response match
+     |     |            |                      | match + write mode: reply [0x23c2, 0x05] → return 2
+     |     |            |                      | else: set bits 0x04/0x08 into +0xa39
+```
+
+#### Sub-TLV Tags — frame_type 0x23c0 (WPA 4-Way Exchange)
+
+Same tag dispatch as 0x21c0. Used during state 0x14 retransmit of credential buffers.
+
+```
+Tag  | Len | Field               | Console Action
+-----|-----|---------------------|-----------------------------------------------
+0x01 | 4   | Timing/beacon value | Byte-swapped word from [param+2]
+0x05 | 6   | DHCP nonce          | Same logic as frame_type 0x21c0
+0x03 | ≥4  | Challenge/response  | Same logic as frame_type 0x21c0
+```
+
+#### Sub-TLV Tags — frame_type 0x2180 (Post-Auth IP Config)
+
+```
+Tag  | Len | Field      | Console Action / Storage
+-----|-----|------------|-------------------------------------------------------
+0x03 | 6   | Gateway IP | Validated via net_validate_unicast_ip → AutoClass1+0x8f0
+0x81 | 6   | DNS1 IP    | Validated via net_validate_unicast_ip → AutoClass1+0x8f8
+0x83 | 6   | DNS2 IP    | Validated via net_validate_unicast_ip → AutoClass1+0x8fc
+```
+
+Invalid IPs set error flags rather than storing. All three tags must be valid unicast addresses.
+
+---
+
+### Console→Adapter: Credential Exchange Replies (FSM States 0x13 / 0x15)
+
+**Source function**: `xpp_fsm_wpa_credential_exchange`  
+**Transport magic**: `0x4b54454e` ("NETK") via `xpp_wpa_outbound_frame_builder` (`FUN_0013d64e`)  
+Both states set `fsm_timer_region[0x15] |= 0x40` before sending.
+
+> **Outbound sub-type is always `0x01`** (source-verified: `FUN_0013d64e(self, uVar3, 1, ...)` — the third argument is the sub-type byte, hardcoded to `1` in both state 0x13 and state 0x15 paths).
+
+#### Payload Structure — State 0x13 (frame_type 0x21c0)
+
+Tags are included conditionally based on `wpa_handshake_flags[1]`:
+
+```
+Tag  | Len | Include when              | Data Source
+-----|-----|---------------------------|----------------------------------------------
+0x01 | 4   | flags & 0x02 clear        | AutoClass1+0xa3e (proposed IP)
+     |     |                           | + word from wpa_handshake_flags[6..7]
+0x05 | 6   | flags & 0x01 clear        | AutoClass1+0xa44 (DHCP nonce)
+     |     |                           | + 4 bytes from wpa_ptk_region[+0x00]
+```
+
+#### Payload Structure — State 0x15 (frame_type 0x2180)
+
+```
+Tag  | Len | Include when              | Data Source
+-----|-----|---------------------------|----------------------------------------------
+0x03 | 6   | flags & 0x10 clear        | AutoClass1 dhcp_wpa_state[+0x00] (gateway IP)
+0x81 | 6   | flags & 0x20 clear        | AutoClass1 dhcp_wpa_state[+0x08] (DNS1 IP)
+0x83 | 6   | flags & 0x40 clear        | AutoClass1 dhcp_wpa_state[+0x0c] (DNS2 IP)
+```
+
+#### State 0x14 — Retransmit (xpp_fsm_retransmit)
+
+Retransmits the credential buffers with frame_type `0x23c0`:
+
+```
+Buffer         | AutoClass1 Offset | Size    | Content
+---------------|-------------------|---------|---------------------------
+wpa_cred_buf0  | +0x962            | 64 bytes| ANonce/SNonce material
+wpa_cred_buf1  | +0x9a2            | 64 bytes| ANonce/SNonce material
+```
+
+`wpa_handshake_flags[2]` counter incremented on each retransmit. Guard: `flags[1] & 0x08` must be clear.
+
+---
+
+### Complete WPA Exchange Sequence (Emulator Reference)
+
+The full sequence of type 0x11 frames required to drive the console from state 0x11 to connected:
+
+```
+Step | Direction       | Sub-type | frame_type | Sub-TLVs                              | Console FSM Effect
+-----|-----------------|----------|------------|---------------------------------------|---------------------------------------
+1    | Adapter→Console | 0x01     | 0x21c0     | tag=0x03/4/0x23c0 (challenge)         | Console replies with 0x23c2 response
+     |                 |          |            | tag=0x05/6/<nonce> (DHCP cookie)      | and NOT(nonce) in reply frame
+2    | Adapter→Console | 0x01     | 0x21c0     | tag=0x01/4/<IP> (proposed IP)         | FSM: 0x14 → xpp_fsm_wpa_state_setup(0x13)
+     |                 |          |            | tag=0x05/6/<nonce>                    | Enters credential exchange entry
+3    | Adapter→Console | 0x09     | 0x21c0     | payload[8..] = ANonce bytes           | Console sends SNonce via state 0x13
+     |                 |          |            | (requires +0xa38 == 0x04)             | xpp_fsm_wpa_credential_exchange()
+4    | Adapter→Console | 0x01     | 0x2180     | tag=0x03/6/<gateway IP>               | local_10[0]: 0x02→0x04
+     |                 |          |            | tag=0x81/6/<DNS1 IP>                  | triggers xpp_fsm_wpa_state_setup(0x14/0x15)
+     |                 |          |            | tag=0x83/6/<DNS2 IP>                  |
+5    | —               | —        | —          | —                                     | FSM exits WPA sub-states → state 0x0c
+     |                 |          |            |                                       | KeSetEvent(+0xaf8) — IP ready signal
+```
+
+### Related Information
+- [WPA Connection State Machine](#wpa-connection-state-machine-substates-0x11-0x15)
+- [Type 0x07 CONNECT_TO_SSID_REQUEST](#9-type-0x07---connect_to_ssid_request) — delivers PMK (Tag 0x10) or passphrase (Tag 0x12) before this flow begins
+
+### Type 0x02 Payload — Byte 208 Radio Mode Capability Bitmask
+**Source**: `my_handle_nlb_handshake_response` decompiled from xonlinedash_xbe.c
+
+```
+Byte 208 (iVar2+0xea) — radio_mode_caps
+  Bit | Mask | AutoClass1 field | Wire value | Meaning
+  ----|------|-----------------|------------|------------------------------
+  0   | 0x01 | 0xd60           | SET (0x05) | 802.11b capable
+  1   | 0x02 | 0xd5c           | CLEAR      | 802.11g capable (MN-740 is b/g but firmware stub clears this)
+  2   | 0x04 | 0xd64           | SET (0x05) | Ad-hoc mode capable
+ 3-7  | 0xf8 | (validation)    | 0x00       | Must be zero — dashboard rejects packet if any high bit set
+
+Wire constant 0x05 (bits 0+2): confirmed in all captures including ad-hoc logs.
+Note: Even the b-only mode captures (lysten_wep*_ch9_b.log) show 0x05, not 0x01.
+This is a fixed firmware stub — the adapter does not dynamically set the 11g bit.
+```
+
+### byte 209 Interface Descriptor Struct (0x800ceba0, stride 0x0C per interface)
+Discovered via `DHCP_Client_Start` assembly. The DHCP init loop walks this struct:
+```
+Offset | Address    | Symbol                 | Size   | Purpose
+-------|------------|------------------------|--------|------------------------------------------
++0x00  | 0x800ceba0 | g_NET_InterfaceStatus  | 1 byte | DHCP skipped for this interface if non-zero
++0x01  | 0x800ceba1 | g_Interface_Has_Target | 1 byte | DHCP skipped for this interface if non-zero.
++0x02  | 0x800ceba2 | g_ROUTER_MAC_ADDRESS   | 6 bytes| Associated AP MAC address
++0x08  | 0x800ceba8 | DHCP_Config_Word       | 4 bytes| Copied to DHCP state table on init
+```
+Only one interface (index 0) is used at boot — the loop runs once (`s0 < 1`).
+
+### Byte 216 wlan_radio_is_up
+```
+Tag 0x04 val | WLAN_Set_Operating_Mode() sets | G_WLAN_OpMode | Radio Active?
+-------------|-------------------------------|---------------|---------------
+0x00         | G_WLAN_OpMode = 8             | 8             | No (disabled)
+0x01         | G_WLAN_OpMode = 2             | 2             | Yes
+other        | G_WLAN_OpMode = 2             | 2             | Yes (error return but mode set)
+```
+
+### Byte 217 - XPP_Get_Channel_Or_Fallback()
+returns live radio channel (1–14) via wlan_freq_to_channel_number() when authenticated (auth_status == 0)
+returns g_CFG_Max_Channel (saved configured channel) when not authenticated
+
+### Byte 218 Encryption type (Tag 0x11 in ADAPTER_INFO_RESP)
+
+Populated by `wlan_get_encryption_type()`. Two paths depending on radio state:
+
+**PATH 1 — Radio live** (`wlan_get_connection_readiness() == 0`):
+Reads `WLAN_Get_Radio_Substate()` from the Marvell 88W8310 HAL hardware context byte at `driver_ctx+0x29`.
+This byte is written exclusively by the Marvell HAL below the firmware abstraction layer — not by any
+firmware function Ghidra resolves. Source is a precompiled HAL binary blob; offset meaning is proprietary.
+```
+Substate | wlan_get_encryption_type() returns | Tag 0x11 value
+---------|------------------------------------|----------------
+0        | 1                                  | 0x01  ← never seen on wire; HAL substate origin unknown
+1        | 2                                  | 0x02  ← wire-verified (WEP active)
+2        | 0                                  | 0x00  ← wire-verified (open)
+3        | 2                                  | 0x02
+>3       | raw substate value                 | varies
+```
+
+**PATH 2 — Radio not connected** (NVRAM path):
+Reads `g_XPP_Auth_Mode_Enabled` (address `0x800ceb9d`, inside NVRAM struct, persists across power cycles).
+```
+g_XPP_Auth_Mode_Enabled | wlan_get_encryption_type() returns | Tag 0x11 value
+-------------------------|------------------------------------|-----------------
+0                        | 0                                  | 0x00  (no encryption)
+1                        | 2                                  | 0x02  (encryption active)
+2                        | 1                                  | 0x01  ← UNREACHABLE (see note)
+other                    | 2                                  | 0x02
+```
+
+**`g_XPP_Auth_Mode_Enabled` write sources** (confirmed from XREF analysis — only 3 writers):
+- `CFG_Set_XPP_Auth_Mode(0x00)` → writes `0` (Tag 0x11=0x00 in CONNECT_REQ)
+- `CFG_Set_XPP_Auth_Mode(0x02)` → writes `1` (Tag 0x11=0x02 in CONNECT_REQ)
+- Any other value passed to `CFG_Set_XPP_Auth_Mode()` → **silently ignored, no write**
+- `Flash_Commit_Settings()` → hardcodes `1` as factory default
+
+**Value `g_XPP_Auth_Mode_Enabled = 2` is dead code** — no code path ever writes it.
+Tag 0x11 = `0x01` via PATH 2 is therefore unreachable. It can only appear via PATH 1 (Marvell HAL
+substate = 0), which has never been observed on wire across any captured session.
+
+**Wire-verified values**: only `0x00` and `0x02` have ever been observed in ADAPTER_INFO_RESP Tag 0x11.
+
+### Trailer Payload Structure
+```
+Offset | Size     | Firmware source                     | Description
+-------|----------|-------------------------------------|----------------------------------
+0      | 1 bytes  | XPP_Get_Link_State_Bitmask()        | 0x02=WEP disabled / link idle, 0x04=WEP enabled / link active
+1      | 1 bytes  | XPP_Tag_09_Handler_Get_Link_State() | 0x01=no link, 0x02=infra linked, 0x04=ad-hoc linked
+2      | 1 bytes  | (static)                            | Always 0x00
+3      | 1 bytes  | (static)                            | Always 0x00
+```
+
+### Payload Example
+```
+[Offset 0x00] HMAC-SHA1:   b9 f0 d1 96 c3 3c 1f 34 f7 b9 e9 85 1c 45 f0 77 11 85 9d a0
+[Offset 0x14] Copyright:   "Device is Xbox Compatible. Copyright (c) Microsoft..."
+[Offset 0x68] Model:       "Xbox Wireless Adapter (MN-740)"
+[Offset 0x88] Firmware:    "1.0.2.26 Boot: 1.3.0.06"
+[Offset 0xD0] Config block: 01 02 01 0b 02 06 68 69 64 64 65 6e
+              → conn=0x01, auth=0x02, opmode=0x01, arbiter=0x0b, enc=0x02, ssid_len=0x06, ssid="hidden"
+```
+
+### Xbox Dashboard AutoClass1 Handshake Context (xonlinedash.xbe)
+After `my_handle_nlb_handshake_response` processes the Type 0x02 wire payload, the dashboard copies data into an internal `AutoClass1` object. The relevant decoded fields within this object are:
+
+```
+AutoClass1 Offset | Field name                       | Size     | Notes
+------------------|----------------------------------|----------|----------------------------------------------------
+0xbb8             | handshake_device_name_raw        | 33 bytes | ASCII model string from wire offset 0x68
+0xbd9             | handshake_firmware_version_raw   | 33 bytes | ASCII firmware string from wire offset 0x88
+0xbfa             | handshake_device_name_unicode    | var      | Wide-char (UTF-16LE) copy of model name
+0xc3c             | handshake_firmware_version_unicode| var     | Wide-char (UTF-16LE) copy of firmware version
+0xefa             | handshake_ssid_unicode           | var      | Wide-char (UTF-16LE) copy of SSID from wire payload
+```
+
+**Source**: `xonlinedash.xbe` Ghidra export — `AutoClass1` structure definition and `my_handle_nlb_handshake_response` / `my_convert_char_to_wchar_string` call sites.
+
+**Note**: The SSID on the wire (Type 0x02 payload offset 0xD6: length byte at 0xDB, string at 0xDC) is raw ASCII. The dashboard converts it to UTF-16LE via `my_convert_char_to_wchar_string` and stores it at `AutoClass1+0xefa`. This is purely a dashboard-side representation — the wire format remains ASCII as documented above.
+
+### Dashboard Connection State Machine (xonlinedash.xbe — Decompile Confirmed)
+
+**Source**: `AutoClass1::my_fetch_wireless_adapter_data_probably` — the main polling loop
+
+The dashboard's internal state (`AutoClass1+0x0c`) drives which packet type is expected and dispatched:
+
+```
+State | Sends Packet Type          | Awaits Response Type    | Timeout
+------|----------------------------|-------------------------|--------
+0x00  | (idle — no pending op)     | —                       | —
+0x01  | Type 0x01 HANDSHAKE_REQ    | Type 0x02 HANDSHAKE_RESP| 2000ms, 1 retry
+0x02  | Type 0x03 NETWORKS_LIST_REQ| Type 0x04 NETWORKS_RESP | 10000ms, 1 retry
+0x03  | Type 0x05 ADAPTER_INFO_REQ | Type 0x06 ADAPTER_INFO  | 3000ms, 2 retries
+0x04  | Type 0x07 CONNECT_TO_SSID  | Type 0x08 CONNECT_RESP  | 10000ms, varies
+0x05  | Type 0x09 BEACON_REQ (1/s) | Type 0x0a BEACON_RESP   | 3000ms/20000ms
+```
+
+Timeout behaviour: if `AutoClass1+0x24` (retry count) reaches 0 with no valid response, `error_code` is set to `0x80000001` and state returns to `0x00`.
+
+State 0x05 (keepalive) differs — beacons are sent every 1000ms and the keepalive timer (`AutoClass1+0x1c`) drives a secondary timeout independent of the retry counter.
+
+---
+
+### xpp_fsm_state_dispatch — Full Decompile Analysis
+
+**Source**: `FUN_0013d97f` (`xpp_fsm_state_dispatch`) decompile, fully decoded.
+
+This is the central FSM. Every state transition passes through here. The function has **two switch blocks**:
+1. **Action switch** (`switchD_0013d9f2`) — executes the work for the new state
+2. **Timeout scheduler** (`switchD_0013dbbc`) — sets the deadline for the next FSM tick
+
+#### Entry Sequence (always runs)
+
+```c
+// 1. Update state byte and increment change counter if state changed
+old_state = AutoClass1+0x8c8;
+AutoClass1+0x8c8 = param_1 (new state);
+AutoClass1+0xa7c += (param_1 != old_state);   // replay-protection counter
+
+// 2. Manage retry sub-counter
+if (param_2 == 0) AutoClass1+0x8c9 = 0;       // reset on fresh entry
+else if (AutoClass1+0x8c9 != 0xFF) ++AutoClass1+0x8c9;  // saturate at 255
+
+// 3. ARP dispatch (runs every tick regardless of state)
+net_dispatch_arp(this, 0, 0, 0);
+```
+
+#### Switch 1 — Action Dispatch (`switchD_0013d9f2`)
+
+```
+State(s)        | Action
+----------------|--------------------------------------------------------------
+0x00, 0x05,     | xpp_fsm_reset_cleanup() — flush ARP, snapshot saved pkt ptrs
+0x16, 0x1b      |
+0x02, 0x07,     | uVar11=0; dispatch ARP with iVar6=iVar10=this+0x8f0
+0x0b            |
+0x03            | uVar11=0; dispatch ARP with iVar6=this+0x908, iVar10=this+0x8f0
+0x04,0x08,0x0a, | → (falls into abort path, see below)
+0x0d,0x0e,0x0f  |
+0x09            | RETRY GUARD: if 8c9≠0 OR (++8ca ≥ this+0x18) → abort_retry_exceeded
+                | ELSE if bit2 of this+0x05 == 0:
+                |   OR this+0xa78 with 0xc0000000; goto state 0x00 (WPA reset path)
+                | ELSE: goto state 0x17 (re-send CONNECT_REQ / handshake)
+0x0c            | if bit3 of this+0xa79 is CLEAR:
+                |   SET bit3 of this+0x8cc (IP_ready flag)
+                |   KeSetEvent(this+0xaf8, 1, 0) if pointer non-null
+                | [FALLS THROUGH to reset cleanup]
+0x11            | RETRY GUARD: if 8c9==0 AND (++8ca > this+0x25):
+                |   xpp_fsm_fatal_error(0xc0000000); return
+                | [FALLS THROUGH to state 0x12]
+0x12            | xpp_build_wpa_assoc_request()
+0x13, 0x15      | xpp_fsm_retransmit()
+0x14            | xpp_fsm_wpa_credential_exchange()
+0x18            | (see nonce generation below)
+0x19            | uVar11=1; dispatch ARP with iVar6=iVar10=this+0x8f0
+```
+
+##### State 0x18 — Link-Local IP Address Generation (RFC 3927)
+
+State 0x18 generates a 169.254.x.x link-local IP candidate address stored in `AutoClass1+0x8f0` as 4 bytes. This is used as a fallback/probe IP for DHCP-less operation.
+
+```
+RETRY GUARD: if 8c9≠0 OR (++8ca ≥ this+0x2d):
+    SET bit7 of this+0xa7b; goto state 0x00   ← nonce retries exhausted
+
+If bVar7 == 1 (FIRST attempt, 8ca just became 1):
+    this+0x8f0 = 0xa9        (169)
+    this+0x8f1 = 0xfe        (254)   ← 169.254.x.x = RFC 3927 link-local range
+    this+0x8f2 = (MAC[4] ^ MAC[2] ^ MAC[0]) % 0xfe + 1   ← 3rd octet from MAC
+    this+0x8f3 = (MAC[5] ^ MAC[3] ^ MAC[1]) % 0xfe + 1   ← 4th octet from MAC
+
+If bVar7 > 1 (RETRY — address was rejected, try a new random one):
+    this+0x8f0 = 0xa9, this+0x8f1 = 0xfe   ← prefix always 169.254
+    this+0x8f2 = net_prng(this) % 0xfe + 1  ← random 3rd octet (1-254)
+    this+0x8f3 = net_prng(this) % 0xfe + 1  ← random 4th octet (1-254)
+
+Both attempts: net_dispatch_arp(this, 0, this+0x8f0, 1) — sends ARP probe for 169.254.x.x
+```
+
+**MAC addresses used** (`AutoClass1+0x1e0` = adapter_mac[6]):
+- MAC[0]=`+0x1e0`, MAC[1]=`+0x1e1`, MAC[2]=`+0x1e2`, MAC[3]=`+0x1e3`, MAC[4]=`+0x1e4`, MAC[5]=`+0x1e5`
+
+#### Switch 2 — Timeout Scheduler (`switchD_0013dbbc`)
+
+All timeouts are relative to `AutoClass1+0x1d8` (current tick counter) and set a deadline in `AutoClass1+0xa68` via `FUN_001337c5` (`xpp_fsm_set_timer`). The floor guard prevents scheduling in the past: `if (deadline < current) deadline = current`.
+
+Timer units: the tick rate appears to be 200ms (5 ticks/second). Timeout values stored in bytes are multiplied by 5 before adding to the current tick.
+
+```
+State(s)                  | Timeout computation
+--------------------------|-------------------------------------------------------------
+0x01, 0x06, 0x10, 0x17    | deadline = this+0x1d8 (fire immediately / use stored absolute)
+0x02, 0x03, 0x07, 0x0b,   | deadline = (this+0x12 * 5) + this+0x1d8
+0x19                      |
+0x04, 0x08, 0x09, 0x0a    | deadline = (this+0x1d * 5) + this+0x1d8
+0x0c                      | deadline = (this+0x924 * 5) + this+0x920  ← AP-count weighted
+0x0d                      | Binary-approach to this+0x928 slot (see below)
+0x0e                      | Binary-approach to this+0x92c slot (see below)
+0x0f                      | deadline = (this+0x24 * 5) + this+0x1d8
+0x11–0x15                 | deadline = (this+0x2a * 5) + this+0x1d8
+0x18                      | deadline = this+0x2f + this+0x1d8  (÷5 is compiler artefact)
+0x1a                      | deadline = this+0x30 + this+0x1d8
+default (all others)      | deadline unchanged (uVar5=0xffffffff, floor guard fires)
+```
+
+##### States 0x0d / 0x0e — Binary-Approach Adaptive Scheduler
+
+States 0x0d and 0x0e use a **binary-approach** algorithm to converge on an AP beacon slot boundary without overshooting:
+
+```c
+slot_target = slot_ticks * 5 + this+0x920;   // slot_ticks = this+0x928 (0x0d) or this+0x92c (0x0e)
+current = this+0x1d8;
+if (current < slot_target) {
+    step = (slot_target - current) >> 1;          // halve remaining distance
+    min_step = this+0x1f * 5;
+    step = max(step, min_step);                   // enforce minimum advance
+    deadline = min(current + step, slot_target);  // never overshoot
+} else {
+    deadline = current;   // already past slot — fire immediately
+}
+```
+
+This is a standard convergence algorithm: each invocation advances halfway to the target, floored by a minimum step (`AutoClass1+0x1f`). Used for AP beacon slot synchronisation during scan states 0x0d/0x0e.
+
+#### State Transition Handler (FUN_0013de56 — Response Received)
+
+Called on receipt of a valid XPP response. Advances the FSM to the next state:
+
+```
+Received in State | Action                                       | Next State
+------------------|----------------------------------------------|------------
+0x02              | OR this+0xa78 with 0x80000800; clear state   | → 0x00
+0x03              | derive state from 8cc>>6 bit OR 4            | → 0x04 or 0x05
+0x07              | clear bit4 of 8cc; zero 8f0 and 930          | → 0x09
+0x0b              | decrement a7c; OR a7b with 0x20              | → 0x0f
+0x18–0x19         | zero 8f0                                     | → 0x1a
+other (<0x18)     | return (no transition)                       | —
+```
+
+#### xpp_fsm_fatal_error — Assembly-Verified Full Logic
+
+> **Assembly-verified** (`xpp_fsm_fatal_error` @ `0x0013e542`):
+
+```
+0013e545: MOV DL, [ESI+0x8c8]        ; current FSM state
+0013e54b: CMP DL, 0x5  → JZ  timer_tick_reset
+0013e550: CMP DL, 0xc  → JZ  timer_tick_reset
+0013e555: CMP DL, 0xe  → JZ  timer_tick_reset
+0013e55a: CMP DL, 0x16 → JZ  timer_tick_reset
+         ; all other states fall through:
+0013e563: OR [ESI+0xa78], param_2    ; OR error code into flags
+0013e56b: CMP DL, 0x14              ; WPA handshake state?
+0013e572:   → OR [ESI+0xa78], 0x80010000  ; (state 0x14 only) add WPA abort marker
+0013e583: PUSH 0 / PUSH 0
+0013e589: CALL xpp_fsm_state_dispatch  ; force re-dispatch → cleanup
+
+timer_tick_reset:
+0013e57e: CALL xpp_fsm_timer_tick    ; full state machine reset (zeroes all FSM state)
+         ; then returns (no state_dispatch)
+```
+
+**Behaviour by caller state:**
+
+```
+Caller FSM state | xpp_fsm_fatal_error behaviour
+-----------------|-----------------------------------------------------------------
+0x05, 0x0c,      | Calls xpp_fsm_timer_tick (FULL RESET — zeroes entire FSM block,
+0x0e, 0x16       |   wpa_anonce_ptr freed, all fields zeroed). No state_dispatch.
+                 |   These are "safe abort" states — clean reset is appropriate.
+0x14 (WPA HS)    | OR a78 with (param_2 | 0x80010000). Calls xpp_fsm_state_dispatch.
+                 |   The extra 0x80010000 signals WPA handshake failure specifically.
+all other states | OR a78 with param_2. Calls xpp_fsm_state_dispatch(0, 0).
+                 |   State dispatch handles cleanup based on updated error flags.
+```
+
+**For the WPA emulator**: The console never sends sub-types `0x05`/`0x07`/`0x08`. If the adapter emulator sends any of these, the console calls `xpp_fsm_fatal_error(this, 0xa0000000)` from the Type 0x11 inbound handler — which is NOT a bypass state, so it takes the `OR + state_dispatch` path, tearing down the WPA session.
+
+#### New AutoClass1 Fields Confirmed from FSM Decompile
+
+```
+Offset  | Type   | Name                    | Description
+--------|--------|-------------------------|----------------------------------------------------------
++0x0005 | byte   | connection_mode_flags   | bit2: 0=WPA path, 1=CONNECT_REQ/state-0x17 path
+                                           | Set from network profile before FSM start.
+                                           | Other bits used elsewhere (bit3 seen at +0x48103)
++0x0012 | byte   | timeout_ticks_short     | Timeout for states 2,3,7,0xb,0x19 (×5 ticks)
++0x001d | byte   | timeout_ticks_connect   | Timeout for states 4,8,9,0xa (×5 ticks)
++0x001f | byte   | scan_min_step_ticks     | Minimum advance step for 0x0d/0x0e adaptive scheduler
++0x0023 | byte   | scan_interval_multi     | Used in scan time estimate: val × 0x15180 ticks
++0x0024 | byte   | timeout_ticks_0f        | Timeout for state 0x0f (×5 ticks)
++0x0025 | byte   | wpa_retry_limit         | Max retries before fatal error in state 0x11
++0x002a | byte   | timeout_ticks_wpa       | Timeout for WPA states 0x11–0x15 (×5 ticks)
++0x002d | byte   | nonce_retry_limit       | Max link-local IP probes before state 0x18 aborts
++0x002f | byte   | timeout_ticks_0x18      | Timeout per probe in state 0x18 (direct ticks, not ×5)
++0x0030 | byte   | timeout_ticks_0x1a      | Timeout in state 0x1a (direct ticks, not ×5)
++0x01d8 | uint32 | current_tick            | Current FSM tick counter (absolute timer baseline)
++0x0268 | uint32 | saved_nonce_subnet      | Copy of 8f0 saved on reset (subnet for ARP removal)
++0x026c | uint32 | saved_nonce_mask        | Copy of 8f4 saved on reset (mask for ARP removal)
++0x0920 | uint32 | scan_base_ticks         | Tick baseline for scan slot calculations. Written as this+0x1d8 at scan start.
++0x0924 | uint32 | scan_ap_weight          | 50% of scan interval (uVar4 >> 1). State 0x0c timeout = (val × 5) + scan_base.
++0x0928 | uint32 | scan_slot_0d_ticks      | 87.5% of scan interval (uVar4 * 7 >> 3). Target for state 0x0d binary-approach.
++0x092c | uint32 | scan_slot_0e_ticks      | 100% of scan interval (uVar4). Target for state 0x0e binary-approach.
++0x0930 | uint32 | scan_reset_flag         | Cleared when entering state 0x07 (on response)
++0x0a68 | uint32 | fsm_timer_target        | Output: next scheduled tick deadline (set by timer fn)
++0x0a60 | uint32 | connection_start_tick   | Tick timestamp written when WPA credentials loaded (this+0x1d8 snapshot).
++0x0a4c | uint32 | wpa_ap_ip[4]            | AP IP address from profile (param_2+0x194).
++0x0a50 | uint16 | wpa_ap_port             | AP port from profile (param_2+0x198).
++0x0af8 | uint32 | ip_ready_event_ptr      | KeSetEvent target — signalled when IP_ready (0x0c)
++0x0918 | uint32 | scan_profile_ip[4]      | IP candidate from scan profile (iVar5+0x18c).
++0x091c | uint16 | scan_profile_port       | Port from scan profile (iVar5+0x190).
++0x091e | uint16 | scan_profile_port_swap  | Byte-swapped port (iVar5+0x192 big-endian swap).
++0x0962 | byte[64]| wpa_cred_buf0          | WPA credential buffer 0 (from profile+0x84, 64 bytes).
++0x09a2 | byte[64]| wpa_cred_buf1          | WPA credential buffer 1 (from profile+0xc4, 64 bytes).
++0x09e2 | byte[40]| wpa_cred_buf2          | WPA credential buffer 2 (from profile+0x104, 40 bytes).
++0x093a | byte[40]| ssid_scan_buf          | SSID scan buffer (from profile+0x5c, 40 bytes; non-infra path).
+```
+
+---
+
+### xpp_fsm_start_connection — Profile Loader (FUN_0013dfa0)
+
+**Source**: `FUN_0013dfa0` (`xonlinedash_xbe.c` @ `0x0013dfa0`)
+
+This function is called to **initiate a connection** from a saved network profile. It transfers all connection parameters from the profile struct (`param_2`) into `AutoClass1` fields, then calls `xpp_fsm_state_dispatch` to start the FSM.
+
+#### param_3 Initialization Bitmask
+
+```
+param_3 bit0 (0x1): → SET AutoClass1+0x8cc bit0 (WEP key present flag)
+param_3 bit1 (0x2): → SET AutoClass1+0x8cc bit1 (hex-encoded WEP key flag)
+param_3 bit2 (0x4): → allocate WPA scan-result ANonce buffer at AutoClass1+0xa34:
+                       size = (AutoClass1+0x26 * 0x18c) + 4 bytes
+                       pool tag 'NETJ' (0x4a54454e) via FUN_00133afc
+                       +0x26 = AP slot count byte (number of scan result slots)
+                       0x18c = 396 bytes per AP slot
+                       +4 = 4-byte header (stores total slot count)
+                       SET AutoClass1+0x8cc bit2 if allocation succeeded (WPA mode active)
+                       If allocation FAILS: ESI = 0x2747, calls xpp_fsm_state_dispatch(0,0) — abort
+```
+
+> **Assembly-verified** (`xpp_fsm_start_connection` @ `0x0013dfa0`):
+> ```
+> 0013dffc: TEST [EBP+_tmp_p1_], 0x4      ; bit2 = WPA?
+> 0013e002: MOVZX EAX, [EBX+0x26]          ; slot count
+> 0013e006: IMUL EAX, EAX, 0x18c           ; * 396 bytes/slot
+> 0013e00c: PUSH 0x4a54454e                 ; pool tag 'NETJ'
+> 0013e011: ADD EAX, 4                      ; + 4-byte header
+> 0013e014: PUSH EAX                        ; size arg
+> 0013e017: CALL FUN_00133afc               ; allocate
+> 0013e01e: MOV [EBX+0xa34], EAX            ; store → wpa_anonce_ptr
+> 0013e02d: OR [EBX+0x8cc], 0x4             ; set WPA mode flag
+> ```
+
+#### Profile Struct (param_2) Field Map
+
+The profile struct passed as `param_2` has the following confirmed offsets:
+
+```
+param_2 offset | AutoClass1 dest | Content
+---------------|-----------------|----------------------------------------------
++0x040 (bits)  | (dispatch)      | Capability/path selector bitmask
+  bit0: DHCP/IP config present
+  bit1: WPA credentials present → copy to +0x962/+0x9a2/+0x9e2/+0xa0a
+  bit2: Infrastructure mode (go to state 0x17 path → bit2 of AutoClass1+0x05)
+  bit3: IP addresses present (2 entries at +0x54)
++0x048         | +0x8f0          | IP address candidate (when bit2&bit3 set)
++0x04c         | +0x8f4          | Subnet mask / netmask
++0x050         | +0x908          | Gateway / router IP
++0x054[0..1]   | +0x8f8/+0x8fc   | Additional IP candidates (when bit3 set)
++0x05c[40B]    | +0x93a          | SSID scan buf (non-infrastructure path)
++0x084[64B]    | +0x962          | WPA credential buf 0 (when bit1 set)
++0x0c4[64B]    | +0x9a2          | WPA credential buf 1
++0x104[40B]    | +0x9e2          | WPA credential buf 2
++0x12c[40B]    | +0xa0a          | WPA passphrase / SSID for WPA_ASSOC_REQ
++0x154/158     | (time check)    | 64-bit timestamp (FILETIME) for lease expiry
++0x15c         | +0x924,928,92c  | Scan interval ticks uVar4:
+                                    +0x924 = uVar4 >> 1 (50%)
+                                    +0x928 = uVar4 * 7 >> 3 (87.5%)
+                                    +0x92c = uVar4 (100%)
++0x160         | +0x8f0/+0x930   | IP (validated by FUN_0013410f)
++0x164         | +0x8f4          | Netmask (validated — must be contiguous ones)
++0x168         | +0x930          | Scan profile copy target
++0x16c[4]      | +0x908..+0x914  | IP list (4 entries)
++0x17c[4]      | +0x8f8..+0x904  | Additional IP list (4 entries, when 8cc&0x40 clear)
++0x18c[4]      | +0x918          | Scan result IPs
++0x192         | +0x91e          | Byte-swapped port
++0x194[6B]     | +0xa4c/+0xa50   | AP MAC address
++0x198         | +0xa50          | AP port
++0x19a         | +0xa52          | AP port (alternate)
+```
+
+#### AutoClass1+0x05 connection_mode_flags — Assembly-Verified
+
+> **Assembly-verified** (`xpp_fsm_start_connection` @ `0x0013e2d6`):
+> ```
+> 0013e2d6: TEST [EBX+0x5], 0x2    ; read AutoClass1+0x05 bit1
+> 0013e2dc: JZ   LAB_0013e2e4      ; if bit1 clear → WPA SSID copy path
+> 0013e2de: PUSH 0x0
+> 0013e2e0: PUSH 0x17              ; else → dispatch to state 0x17 (re-send CONNECT_REQ)
+> ```
+
+The FSM reads `AutoClass1+0x05` but only **bit1 (0x02)** is checked here — not bit2. The field semantics:
+- **bit1 (0x02)**: if SET → skip WPA SSID copy, go directly to state 0x17 (re-use existing CONNECT_REQ). If CLEAR → copy SSID from profile into `+0x93a` via `FUN_0013c9db` (40 bytes), then dispatch to state 0x06.
+- **bit2 (0x04)**: read at state 0x09 branch — if SET → state 0x17 path; if CLEAR → WPA abort path (OR `+0xa78` with `0xc0000000`, goto state 0x00). **Write site not in this function.**
+
+The **WPA mode flag** written by this function is `AutoClass1+0x8cc bit2` (set at `0x0013e02d` when ANonce buffer allocation succeeds) — this is distinct from `AutoClass1+0x05 bit2`.
+
+**Note**: The write site for `AutoClass1+0x05` bits remains unidentified within the analysed functions. It is set by the caller before `xpp_fsm_start_connection` is invoked. Callers: `FUN_00130a10:0x00130a1c` and `XnInit:0x00130db0`.
+
+### Related Information
+- [Type 0x01 Request](#3-type-0x01---handshake_request)
+- [Signal Strength Conversion](#signal-strength-conversion)
+- [Firmware Function Map](#firmware-function-map)
+
+---
+
+### FUN_0013ee4f — Shared Epilogue (NOT a Real Function)
+
+> **Assembly-verified**: `FUN_0013ee4f` is **not a function**. Ghidra incorrectly identified the shared exit path of `xpp_wpa_inbound_frame_handler` as a standalone function.
+
+```
+0013ee4f: POP EDI
+0013ee50: POP ESI
+0013ee51: POP EBX
+0013ee52: LEAVE
+0013ee53: RET 0x8
+```
+
+All 21 XREFs to this address are tail-JMPs (`JMP LAB_0013ee4f`) from within `xpp_wpa_inbound_frame_handler` — they are early exits from that function, not calls to a separate function. There are **no side effects**. Any documentation or code referencing `FUN_0013ee4f` as a callable function with behaviour is incorrect.
+
+---
+
+### FUN_0013ee56 — xpp_wpa_anonce_handler (Assembly-Verified)
+
+> **Assembly-verified** (`FUN_0013ee56` @ `0x0013ee56`). Only caller: `FUN_0013f3a1:0x0013fa8e`.
+
+This function handles inbound **0x23c2 challenge/response** frames from the adapter during WPA credential exchange. It validates the frame, assembles the response using `wpa_cred_buf0` and `wpa_cred_buf1`, and sends via `xpp_wpa_outbound_frame_builder`.
+
+#### Entry Guards
+```
+1. Outer length (param_1[4]) < 4                → OR +0xa7a with 0x2; return
+2. Inner length word (EBX[2] byte-swapped) < 4  → same
+3. Inner length > outer length                  → same
+4. FSM state < 0x14                             → OR +0xa7a with 0x2; return (too early)
+5. FSM state == 0x14: check +0xa39 bit3 == 0    → else return (already processed)
+6. param_2 (frame_type) == 0x23c0: SETZ AL      →
+      compare +0xa39 bit2 == AL                  → mismatch → return
+```
+
+#### Routing by inbound sub-type byte (EBX[0])
+```
+Sub-type | Condition       | Action
+---------|-----------------|----------------------------------------------------------
+0x01     | param_1 >= 5,   | Decrypt/hash: FUN_001433b7 (init), FUN_001433f5 (update)
+         | param_1 >= 5+   |   with wpa_cred_buf0 (+0x962) and optionally wpa_cred_buf1
+         | EBX[4] len      |   and EBX[5..] challenge data. Then calls
+         |                 |   xpp_wpa_outbound_frame_builder(frame_type=0x23c2, sub-type=0x2,
+         |                 |   inner_len=strlen(+0x962), payload=+0x962[...], ...)
+0x02     | FSM == 0x14     | → xpp_fsm_wpa_state_setup(0x15)  (advance to IP exchange)
+0x03     | FSM == 0x14     | → xpp_fsm_wpa_state_setup(0x15)  (same)
+0x03     | —               | → xpp_fsm_fatal_error(0x80010000)
+0x04     | —               | → xpp_fsm_fatal_error(0x80010000)
+other    |                 | → return (no action)
+```
+
+#### Credential Buffer Usage
+```
+AutoClass1+0x962 (wpa_cred_buf0, 64B): Fed to MD5_Update as first input block
+AutoClass1+0x9a2 (wpa_cred_buf1, 64B): Fed to MD5_Update as second input block (if non-empty)
+EBX[5..]                              : Challenge data from inbound 0x23c2 frame, also fed to MD5_Update
+MD5_Init    = FUN_001433b7            : Initialises 92-byte MD5 context (see below)
+MD5_Update  = FUN_001433f5            : Appends data to MD5 context
+MD5_Final   = FUN_00143523            : Produces 16-byte digest
+```
+
+#### MD5 Context Layout (assembly-verified, `FUN_001433b7`)
+
+```
+Offset | Size | Content
+-------|------|-----------------------------------------------------
++0x00  | 4B   | Type tag: 0x2035444d (ASCII 'MD5 ', little-endian)
++0x04  | 64B  | Message block buffer (16 × DWORD, zeroed on init)
++0x44  | 4B   | State word A = 0x67452301  (RFC 1321 initial value)
++0x48  | 4B   | State word B = 0xefcdab89
++0x4c  | 4B   | State word C = 0x98badcfe
++0x50  | 4B   | State word D = 0x10325476
++0x54  | 4B   | Bit count low  (zeroed on init)
++0x58  | 4B   | Bit count high (zeroed on init)
+Total context size: 0x5c = 92 bytes
+```
+
+> **Algorithm confirmed: standard MD5 (RFC 1321).** All four initialisation constants match exactly. The `xpp_wpa_anonce_handler` computes `MD5(wpa_cred_buf0 ‖ wpa_cred_buf1 ‖ challenge_data)` and sends the 16-byte digest as the `0x23c2` challenge response payload.
+
+### Signing vs Verification
+**Xbox → Adapter (Type 0x01 — CHALLENGE):**
+- Sends 16-byte random nonce only. No secret. No HMAC.
+
+**Adapter → Xbox (Type 0x02 — SIGNED RESPONSE):**
+- Adapter proves authenticity by computing HMAC-SHA1 over the nonce.
+- Dashboard verifies the digest — only a genuine MN-740 with the correct
+  ROM key and salt can produce the right answer.
+
+**Adapter firmware: No HMAC verification code exists**
+- Evidence: Zero `memcmp()` calls in entire firmware
+- The adapter only validates RFC 1071 header checksum on received packets
+- It does not need to verify anything — it only needs to sign
+
+### Authentication Flow
+```
+Xbox Dashboard                         MN-740 Adapter
+      |                                      |
+      |--- Type 0x01: [16-byte nonce] ------>|
+      |                                      | HMAC-SHA1(
+      |                                      |   key   = g_XPP_HMAC_Key (16 bytes),
+      |                                      |   input = nonce(16)
+      |                                      |         + g_ROUTER_MAC_ADDRESS(6)
+      |                                      |         + g_XPP_HMAC_MASTER_KEY(117)
+      |                                      | ) = 20-byte digest
+      |<-- Type 0x02: [20-byte digest + payload] ----|
+      |                                      |
+      | my_calculate_handshake_hmac():       |
+      |   SAME key = g_XPP_HMAC_Key          |
+      |   SAME input layout:                 |
+      |     nonce(16) from AutoClass1+0x2c   |
+      |     + Ethernet src_mac(6)            |
+      |     + g_XPP_HMAC_MASTER_KEY(117)     |
+      |   Compare ALL 20 bytes of digest.    |
+      | Only genuine MN-740 firmware         |
+      | (with correct ROM key+string)        |
+      | can produce a matching digest.       |
+```
+
+### Dashboard Digest Verification (Xbox-side — xonlinedash.xbe)
+**Source**: `my_calculate_handshake_hmac` — fully decompiled from `xonlinedash_xbe.c`
+
+Both sides use **identical algorithm, key, and input layout**:
+
+```c
+// Key: identical 16-byte constant hardcoded in the XBE binary
+key[16] = { 0xcb, 0x27, 0x5f, 0xf2, 0x38, 0xab, 0x61, 0xdc,
+             0x87, 0x99, 0xfa, 0x01, 0xad, 0x17, 0x74, 0x5e };
+
+// Input: 139 bytes total
+input[0..15]   = nonce (from AutoClass1+0x2c, received in Type 0x01)
+input[16..21]  = adapter_source_mac (from Ethernet frame src_mac field)
+input[22..138] = g_XPP_HMAC_MASTER_KEY (117-byte ROM string)
+
+// Compute and compare full 20-byte digest
+XcHMAC(key, 16, input, 139, 0, 0, digest_out);
+compare digest_out[0..19] == Type_0x02_payload[0..19]
+```
+
+The `adapter_source_mac` used by the dashboard (Ethernet `src_mac`) matches `g_ROUTER_MAC_ADDRESS` used by the adapter — both refer to the adapter's own MAC address. The binding to a specific adapter is inherent in the MAC being part of the HMAC input.
+
+✅ **Confirmed and closed**: No dynamic key derivation. The v17 speculation about `console_ip + adapter_mac` key construction and 16-byte truncation was incorrect and is fully retracted.
+
+### Security Implications
+**Actual Security Relies On:**
+1. HMAC-SHA1 challenge-response — proves adapter has genuine ROM key and ROM string
+2. `g_ROUTER_MAC_ADDRESS` / Ethernet `src_mac` binds the HMAC to a specific adapter MAC
+3. Nonce randomness — each session uses a fresh 16-byte random nonce (via `XNetRandom`)
+4. Physical LAN isolation (no WAN routing)
+
+**Note**: MAC address pairing (`mac.dat`) and the 30-second watchdog are
+secondary mechanisms — the primary authentication is the HMAC challenge-response.
+
+----
+### Supporting Information
+
+---
+
+### UDP Discovery Implementation
+**CRITICAL**: The adapter MUST run a background UDP listener on port 2002. Without this, Xbox will never find the adapter!
+
+---
+
+## Connection Workflows
+
+### Infrastructure Mode Connection
+
+1. Xbox → Adapter:  HANDSHAKE_REQUEST (Type 0x01)
+   - 16-byte random challenge
+
+2. Adapter → Xbox:  HANDSHAKE_RESPONSE (Type 0x02)
+   - 256 bytes with HMAC signature
+   - Current SSID, BSSID, signal, channel, IP
+   ✅ Authentication complete
+   ✅ Xbox dashboard shows adapter info
+
+3. Xbox → Adapter:  BEACON_REQUEST (Type 0x09)
+4. Adapter → Xbox:  BEACON_RESPONSE (Type 0x0a)
+   - Security status (02 80 03 00 = WPA2)
+   [Repeat 3-4 at least 3 times]
+   ✅ Link established
+
+   [ONLY if user opens network list in dashboard]
+5. Xbox → Adapter:  NETWORKS_LIST_REQUEST (Type 0x03)
+6. Adapter → Xbox:  NETWORKS_LIST_RESPONSE (Type 0x04)
+   - Array of 61-byte network slots
+   ✅ User sees available networks
+
+   [If user selects a network and enters password]
+7. Xbox → Adapter:  CONNECT_TO_SSID_REQUEST (Type 0x07)
+   - TLV: SSID + password + security type
+8. Adapter → Xbox:  CONNECT_TO_SSID_RESPONSE (Type 0x08)
+   - Result code (0x00 = success)
+   ✅ Connection initiated
+
+   [CONTINUOUS - Every 1 second while connected]
+9. Xbox → Adapter:  BEACON_REQUEST (Type 0x09)
+10. Adapter → Xbox: BEACON_RESPONSE (Type 0x0a)
+    ✅ Keepalive maintained
+
+   [PERIODIC - Every 5-10 seconds for status updates]
+11. Xbox → Adapter:  ADAPTER_INFO_REQUEST (Type 0x05)
+12. Adapter → Xbox: ADAPTER_INFO_RESPONSE (Type 0x06)
+    - 4-byte status update
+    ✅ Dashboard refreshes signal bars
+
+----
+
+### Ad-hoc Mode Connection
+
+1-4. [Same handshake and beacon sequence as infrastructure]
+
+5. Xbox → Adapter:  CONNECT_TO_SSID_REQUEST (Type 0x07)
+   - Tag 0x02: Wi-Fi Channel (MANDATORY - e.g., 0x06 for channel 6)
+   - Tag 0x01/0x07: SSID
+   - Tag 0x09: 0x01 (Enable radio)
+   - Tag 0x0A-0x0E: WEP keys and index (if encrypted)
+
+6. Adapter → Xbox:  CONNECT_TO_SSID_RESPONSE (Type 0x08)
+   - Result code 0x00
+   ✅ Ad-hoc network created
+
+7. [Adapter begins beaconing on specified channel]
+8. [Other Xbox consoles can discover and join]
+9. [Continue beacon keepalive as in infrastructure mode]
+
+**Key Difference**: Ad-hoc **requires** Tag 0x02 (channel), infrastructure auto-selects.
+
+---
+
+### Wire-Verified: Open Network with WAN Connection (Channel 3)
+**Source**: `lysten_open_connect_with_wan_ch_3_new.log` and `lysten_open_connect_with_wan_ch_3_new2.log`
+**Date**: Wed Mar 4 2026 — First successful real-hardware WAN connection log.
+
+This log captures the adapter connecting to an open (unencrypted) 802.11g network on channel 3
+(SSID "open", BSSID c4:4b:d1:00:47:4e, DrayTek Vigor 2762 router) with a real WAN internet connection active.
+
+**Key observations from the log:**
+
+1. BEACON_RESP (Type 0x0a) payload consistently: `02 80 6c 00`
+   - auth=0x02 (idle), rssi=0x80 (pre-seed), rate=0x6c (54 Mbps infrastructure) ✅
+
+2. ADAPTER_INFO_RESP (Type 0x06) shows:
+   - Tag 0x01 (IP): 192.168.1.150 — real DHCP address from router
+   - Tag 0x05 (channel): 0x03 — wire-confirms channel 3 reported correctly ✅
+   - Tag 0x06 (BSSID): c4:4b:d1:00:47:4e — DrayTek Vigor 2762 router MAC
+   - Tag 0x07 (SSID): "open" (4 bytes)
+   - Tag 0x08: 0x02 (WEP inactive — correct for open network)
+   - Tag 0x09: 0x01 (no link — DHCP state machine not at 0x52 yet)
+   - Tag 0x02: 0x00 (same reason as Tag 0x09)
+
+3. The Xbox queries Type 0x05 / 0x06 every ~3-5 beacons while connected.
+
+4. Transient beacon anomalies during re-association (packets like `d5 82 00 d7` and `08 e8 00 d7`)
+   appear briefly — Byte 3 (reserved) is **not** always 0x00 during these transitional states.
+   These are short-lived and the adapter returns to stable `02 80 6c 00` quickly.
+
+5. The Xbox sends ADAPTER_INFO_REQ without first sending a NETWORKS_LIST_REQ or CONNECT_REQ
+   in this capture — the adapter was already configured from a previous session stored in NVRAM.
+
+**Confirmed working configuration (for emulator implementors)**:
+- Type 0x0a rate=`0x6c` (54 Mbps) is correct for infrastructure when radio associates
+- Type 0x06 Tag 0x05 returns the raw channel number (e.g. channel 3 = `0x03`) ✅
+- Tag 0x09 = `0x01` (no link) is the normal state during ADAPTER_INFO query, before CONNECT_REQ is issued. It can coexist with a saved IP in Tag 0x01 since Tag 0x01 returns the stored static/last-used IP regardless of current link state.
+
+---
+
+### Tag 0x11 - CFG_Set_XPP_Auth_Mode
+**Firmware Function**: `CFG_Set_XPP_Auth_Mode()`  
+**Purpose**: Sets `g_XPP_Auth_Mode_Enabled` (NVRAM, persists across power cycles) so the adapter can
+report the correct encryption state in ADAPTER_INFO_RESP Tag 0x11 before a live radio association exists.
+
+**Accepted values** (only `0x00` and `0x02` are processed — all others silently ignored):
+- `0x00` — sets `g_XPP_Auth_Mode_Enabled = 0` → ADAPTER_INFO_RESP Tag 0x11 reports `0x00` (no encryption)
+- `0x02` — sets `g_XPP_Auth_Mode_Enabled = 1` → ADAPTER_INFO_RESP Tag 0x11 reports `0x02` (encryption active)
+
+**Wire-verified**: `0x02` is sent in CONNECT_REQ for all WEP connections. `0x00` is sent for open networks.
+`0x01` in CONNECT_REQ Tag 0x11 would be silently ignored (not in accepted values whitelist).
+
+**Dashboard 802.11 auth mode field** (`AutoClass1+0xf5f`): This is a **separate** field from the Tag 0x11 firmware value. The dash field controls the 802.11 authentication algorithm used for association:
+```
+field_0xf5f value | Set by function   | 802.11 auth algorithm
+------------------|-------------------|----------------------------
+0x00              | FUN_000a2ea3()    | Open System authentication
+0x01              | FUN_000a2e8a()    | Shared Key authentication (WEP-only)
+0x02              | FUN_000a2ebc()    | WPA/WPA2 authentication
+```
+This dash-side value is stored and used by the sub-state machine but does NOT map directly to the Tag 0x11 wire value (which uses only 0x00 / 0x02 as described above).
+
+---
+
+## Security Types Reference
+
+### Security Type Values (Byte 40 in Network Slots)
+```
+⚠ Wire-verified across all real adapter captures: This byte is ALWAYS 0x02.
+The firmware writes 0x02 unconditionally for every network type.
+The enumeration table previously documented here is NOT used by firmware.
+```
+
+### Security Flags (Byte 42 in Network Slots) — Wire Verified
+```
+ Value | 802.11 Privacy bit | Wire-verified networks
+-------|--------------------|-------------------------------------------------
+ 0x02  | NOT set in beacon  | Open networks, WEP open-auth (AP-dependent)
+ 0x04  | SET in beacon      | WPA, WPA2, WEP shared-key, OWE
+```
+**Note**: The adapter reports what the AP beacon advertises — not the actual security protocol in use.
+- WEP open-auth APs with Privacy=0 in their beacon will show 0x02.
+- OWE (opportunistic encryption) APs with Privacy=1 in their beacon will show 0x04 even though auth is open.
+- WPA and WPA2 are indistinguishable from each other via this byte alone.
+
+---
+
+## Signal strength / link quality scaling
+### Firmware-verified facts
+
+**BEACON_RESP (Type 0x0a) smoothed_rssi (Byte 1)**
+- Source: `drvr_get_smoothed_rssi()` — firmware-confirmed
+- Formula: `raw = driver_ctx[0x273] − 0x5f` (signed byte)
+- Averaging: 10-sample rolling average stored in `g_RSSI_Smoothed_Output`
+- Seed value `0xba` (-70) — written when `XPP_Check_Auth_Status() != 0` (not authenticated)
+- Value `0x80` (-128) — wire-observed pre-association default; `g_RSSI_Smoothed_Output` is an uninitialised global (BSS), wire captures consistently show `0x80` before association
+
+**Type 0x04 NETWORKS_LIST_RESPONSE (Byte 44 per slot)**
+- Source: `wlan_map_rssi_to_quality()` via lookup table — firmware-confirmed
+- Scale: 0–255 linear (confirmed from function structure)
+- The Xbox Dashboard displays signal bar labels from this value — exact dBm breakpoints confirmed from `xpp_rssi_to_signal_bars` decompile. See Signal Bar Conversion Table below.
+
+**Type 0x02 HANDSHAKE_RESPONSE capability fields (Bytes 174–175)**
+- Both are HARDCODED STUBS from the adapter firmware
+- The dashboard decodes them as WPA cipher suite capability bitmasks
+- Byte 174 (0x06): bits &2 and &4 set = WPA-TKIP and WPA-CCMP supported
+- Byte 175 (0x07): bits &1, &2, &4 set = open/WEP/TKIP cipher modes available
+- See the WPA Capability Byte Decoding table under Type 0x02 for full bit definitions
+
+### Dashboard Signal Bar Thresholds — Source Verified
+**Source**: `xpp_rssi_to_signal_bars` (`FUN_000a2fea`, `xonlinedash_xbe.c` @ `0x000a2fea`)
+
+Function reads `AutoClass1+0x48` (smoothed RSSI signed byte from BEACON_RESP).
+Guards before thresholds: `AutoClass1+0x0d == 0x01` AND `AutoClass1+0x40 != 0x80000001` AND `rssi > -0x5b`.
+If any guard fails: returns 0 bars.
+
+```c
+// Decompiled logic (signed byte cVar1 = AutoClass1+0x48):
+if (cVar1 <= -0x5b) return 0;   // no signal / disconnected
+if (cVar1 <= -0x52) return 1;
+if (cVar1 <= -0x48) return 2;
+if (cVar1 <= -0x44) return 3;
+if (cVar1 <= -0x3a) return 4;
+return 5;                        // (-0x3a < rssi)
+```
+
+### Signal Bar Conversion Table
+
+| Bars | RSSI threshold     | approx dBm | visual        |
+|------|--------------------|------------|---------------|
+| 0    | rssi ≤ -0x5b (-91) | ≤ -91 dBm  | ░░░░░ no signal |
+| 1    | rssi ≤ -0x52 (-82) | ≤ -82 dBm  | █░░░░          |
+| 2    | rssi ≤ -0x48 (-72) | ≤ -72 dBm  | ██░░░          |
+| 3    | rssi ≤ -0x44 (-68) | ≤ -68 dBm  | ███░░          |
+| 4    | rssi ≤ -0x3a (-58) | ≤ -58 dBm  | ████░          |
+| 5    | rssi  > -0x3a (-58)| > -58 dBm  | █████ excellent |
+
+**Note**: dBm values are approximate. The smoothed_rssi byte is already offset by the firmware
+formula `raw = driver_ctx[0x273] − 0x5f`, so these threshold bytes map directly to the
+smoothed_rssi value in BEACON_RESP byte 1 — no further conversion needed.
+
+**Previous table (guessed from observation) has been replaced by this source-verified version.**
+
+
+---
+
+## Error code flags
+
+Two distinct error code systems exist: **XPP wire result bytes** (in packet payloads) and **Dashboard internal status codes** (in `AutoClass1.error_code`).
+
+### XPP Wire Result Bytes (payload byte at offset 0x00 in Type 0x06 and 0x08 responses)
+
+**Source**: `my_handle_adapter_info_response` and `my_handle_connect_to_ssid_response` decompiled from `xonlinedash_xbe.c`
+
+```
+Wire Byte | Meaning                     | Dashboard sets error_code to
+----------|-----------------------------|------------------------------
+0x00      | Success — TLV data follows  | 0x00000000 (cleared)
+0x01      | Error / rejected            | 0x80000003 (hard error)
+0x02      | Retry requested             | 0x80000002 (retry), retries after ~8 seconds
+0x03      | Error / rejected            | 0x80000003 (hard error)
+0x04      | Error (connect only)        | 0x80000003 (hard error, Type 0x08 only)
+```
+
+### Dashboard Internal Status Codes (AutoClass1.error_code field, 4 bytes)
+
+**Source**: assignments across all response handler functions in `xonlinedash_xbe.c`
+
+```
+Code        | Meaning
+------------|-----------------------------------------------------------------------
+0x00000000  | Idle / cleared — no pending operation
+0x0000FFFF  | Pending / in-progress — request has been sent, awaiting response
+0x80000001  | Timeout — retry counter exhausted, no valid response received
+0x80000002  | Retry — adapter requested retry (wire code 0x02); dashboard re-sends
+0x80000003  | Hard error — adapter rejected request (wire code 0x01/0x03/0x04)
+0x80000004  | Handshake validated — Type 0x02 HMAC and payload checks all passed
+```
+
+These status codes are written into `AutoClass1+0x40` (`error_code` field) by the response handlers and polled by the dashboard UI state machine. Code `0x80000001` is the most-checked in the codebase — dashboard screens test for it to detect adapter loss.
+
+**Firmware-side error constants** (adapter `NML_bin.h`, negative values, never sent on wire):
+`XPP_ERR_FATAL_ABORT (0xFFFFFFFE)`, `XPP_ERR_REMOTE_REJECT (0xFFFFFFFD)`,
+`XPP_ERR_FILE_IO (0xFFFFFFFC)`, `XPP_ERR_MALLOC_FAIL (0xFFFFFFEB)`.
+
+### 6.2 MAC.DAT Pairing File Format
+
+**Firmware-verified** (`NML_bin.h`, `NML_bin.c`):
+
+```c
+struct XPP_VirtualFileDescriptor {
+    char filename[8];      // e.g. "mac.dat"
+    char magic_header[8];  // "AMACAEPM"
+    byte metadata[16];     // Pairing/flags data — internal layout below
+};
+```
+
+`MAC_DAT_DESCRIPTOR_BLOCK` is a real global (confirmed at `NML_bin.c` line 43).
+The `metadata[16]` blob is accessed at offsets `[0]–[3]`, `[4]–[9]`, and `[0xc]–[0xf]`
+by `xpp_finalize_console_pairing()` and the TFTP RRQ handler — but as raw bytes with
+no named fields in the decompiled source.
+
+⚠ **The following previously-documented field breakdown is NOT firmware-verified and has been removed**:
+HW Revision, Security Flags, Region Code, Timestamp, CRC32, pairing flags bitmask (Bit 0/1/2).
+The "Man-in-the-Middle drop" behaviour for mismatched Security Flags was also invented.
+
+**What is confirmed**:
+- `AMACAEPM` magic string is real
+- `metadata[0–3]` and `metadata[4–9]` and `metadata[0xc–0xf]` are used in pairing/auth logic
+- `g_XPP_Paired_Flag` is set by `CFG_Set_Paired_Xbox_MAC()` (0=unpaired, 1=paired)
+- Factory reset clears paired state
+
+
+---
+
+## WPA/WPA2 Implementation
+
+### Background
+
+Full WPA/WPA2 support involves **three separate gaps** that must all be closed:
+
+**Gap 1 — Adapter does not advertise WPA capability (HANDSHAKE_RESP)**
+The adapter's HANDSHAKE_RESP byte 174 stub value of `0x06` never sets bit 0x10 (`field_0xd70`).
+The dashboard checks this bit before showing the WPA PSK option in the security type UI.
+With stock firmware, the user **cannot even select WPA** — the menu option is hidden.
+
+**Gap 2 — Dashboard sends WPA key but firmware discards it; adapter does not drive handshake**
+Once WPA is selected and a key entered, the dashboard:
+- Sends Tag 0x10 (32-byte PMK, from 64-hex input) via CONNECT_REQ (Type 0x07), OR
+- Sends Tag 0x12 (ASCII passphrase) via CONNECT_REQ (Type 0x07), OR
+- Sends a Type 0x11 WPA_ASSOC_REQ packet (`xpp_build_wpa_assoc_request`) with SSID from `AutoClass1+0xa0a`
+
+After sending WPA_ASSOC_REQ, the console **waits for the adapter to send type 0x11 frames back**
+to drive the IP negotiation and ANonce exchange (sub-types 0x01 and 0x09). Without these
+adapter-initiated frames, the console FSM stays in state 0x11/0x12 until timeout.
+
+The adapter's Tag 0x10 handler stubs the PMK. The adapter sends no type 0x11 response frames.
+
+**Gap 3 — 4-way handshake is stubbed (eapol_handle_key_exchange)**
+Even if the PMK is stored, `eapol_handle_key_exchange()` logs an immediate failure and returns.
+ANonce/SNonce exchange, PTK derivation, MIC verification, and GTK installation are all absent.
+
+The Xbox was **designed** to offload PMK calculation to the adapter. The Dashboard sends the
+pre-calculated PMK via Tag 0x10 so the adapter does not need to run the expensive PBKDF2
+locally. The adapter was then supposed to complete the 4-way handshake and install PTK/GTK
+into the hardware key cache. All three parts of this were stubbed or omitted before shipping.
+
+**Summary: For a WPA-capable emulator or patched firmware, ALL THREE GAPS must be addressed:**
+1. Report WPA capability in HANDSHAKE_RESP byte 174 bit 0x10 (send `0x16` instead of `0x06`)
+2. Handle the key material (Tag 0x10 PMK, Tag 0x12 passphrase, or Type 0x11 ASSOC_REQ SSID)
+3. Implement the full bidirectional type 0x11 sub-protocol (IP negotiation → ANonce → IP config)
+4. Implement `eapol_handle_key_exchange()` body (4-way handshake with AP)
+
+### What Is Already In Firmware
+```
+ Component            | Function                                                                            | Status
+----------------------|-------------------------------------------------------------------------------------|--------
+ AES crypto engine    | `AES_Key_Expansion_Routine`, `aes_hw_encrypt`, `aes_init_tboxes`                    | Complete
+ CCMP encrypt/decrypt | `wlan_ccmp_encrypt`, `wlan_ccmp_decrypt_verify`, `ath_hal_ccmp_aes_encrypt`         | Complete
+ Hardware key cache   | `ath_hal_set_key_cache_entry`, `ath_hal_install_hw_key`, `ath_hal_program_key_slot` | Complete
+ TKIP MIC             | `ath_hal_is_tkip_mic_enabled`, `wpa_handle_mic_failure`                             | Complete
+ WPA security init    | `WLAN_WPA_Security_Init`                                                            | Complete
+ WPA/RSN IE handling  | `wlan_wpa_ie_generator`, `wlan_pack_wpa_ie_tlv`, `wlan_parse_wpa_rsn_ies`           | Complete
+ EAPOL state machine  | `eapol_pae_state_machine`, `wlan_eapol_frame_dispatcher`                            | Complete
+ PBKDF2 derivation    | `XPP_PBKDF2_F_Block` (FUN_8004113c)                                              | Dead code - never called
+ Tag 0x10 receive     | `XPP_Parse_Entry` case 0x10                                                    | Stub - discards PMK
+ 4-way handshake      | `eapol_handle_key_exchange`                                                         | Stub - logs failure and returns
+```
+### The Two Patch Paths
+
+#### Path 1 - Xbox Sends PMK (Original Design Intent)
+
+The Xbox Dashboard already calculates and sends the PMK in Tag 0x10. No Xbox modification
+is needed. The patch is purely on the firmware side.
+
+**Call chain after patch**:
+```
+XPP_Parse_Entry() case 0x10
+    PATCH: extract 32-byte PMK from pbVar4+2
+    store to new global: G_WPA_PMK[32]
+    set flag: G_WPA_PMK_READY = 1
+        |
+        v
+eapol_pae_state_machine()          <- already intact
+        |
+        v
+eapol_handle_key_exchange()        <- PATCH: implement body
+    retrieve G_WPA_PMK
+    receive ANonce from AP msg 1
+    generate SNonce
+    derive PTK = PRF-512(PMK, ANonce, SNonce, MACs)
+    verify MIC on msg 3
+    install PTK via ath_hal_set_key_cache_entry()
+    extract GTK from msg 3 (wrapped)
+    install GTK via ath_hal_install_hw_key()
+    send msg 4 (confirm)
+        |
+        v
+Hardware AES/CCMP engine           <- already intact
+```
+
+**NVRAM changes required**: New 32-byte global `G_WPA_PMK` and 1-byte flag `G_WPA_PMK_READY`.
+These do not need to be persisted to flash - they are session-only values.
+
+**Passphrase limitation**: None. The Xbox provides the PMK directly so the firmware never
+sees the passphrase. Any WPA2-compatible AP password works.
+
+---
+
+#### Path 2 - Receive Passphrase via Type 0x11 WPA_ASSOC_REQ
+
+The dashboard sends a WPA_ASSOC_REQ packet (Type 0x11) carrying the SSID from
+`AutoClass1+0xa0a`. This fires from state 0x11/0x12 in the sub-state machine via
+`xpp_build_wpa_assoc_request`. The SSID is embedded as sub-tag 0x0101 with its length.
+
+**Important**: The Type 0x11 WPA_ASSOC_REQ carries the **SSID**, not the passphrase directly.
+The passphrase material arrives via Tag 0x10 (PMK) or Tag 0x12 (passphrase) in the earlier
+CONNECT_REQ. The Type 0x11 packet signals the start of 802.11 association for the specific SSID.
+
+After receiving WPA_ASSOC_REQ, the adapter must:
+1. Begin 802.11 association with the AP for the specified SSID
+2. Send type 0x11 sub-type 0x01 frames (frame_type=0x21c0) to initiate IP negotiation
+3. Exchange challenge tokens with the console (tag=0x03 token 0x23c0/0x23c2)
+4. Send sub-type 0x09 (ANonce) once 802.11 association and initial EAPOL completes
+5. Complete 4-way handshake with AP using stored PMK
+6. Send type 0x11 frame_type=0x2180 with IP config (gateway, DNS) to console
+7. Console exits WPA sub-states and signals IP ready via KeSetEvent(+0xaf8)
+
+**Worker task requirement**: 4-way handshake must not block the network mutex.
+Must run in the existing `wireless_worker_task` context.
+
+---
+
+#### Path 3 - Firmware Calculates PMK Locally (via Tag 0x12)
+
+**Note**: Previous spec versions documented this as "Path 2 via repurposed Tag 0x10". This
+was incorrect. The correct tag for passphrase-in-CONNECT_REQ is Tag 0x12 (not Tag 0x10).
+
+When the user enters an 8–63 char ASCII passphrase, the dashboard sends Tag 0x12 (raw
+passphrase) in a Type 0x07 CONNECT_REQ. Stock firmware has no `case 0x12` — it aborts
+parsing. A patch adds `case 0x12` to call `wlan_pbkdf2_pmk_derive()`.
+
+See §Tag 0x12 for full details of this path.
+
+---
+
+### Comparison
+```
+| Consideration      | Path 1: Tag 0x10 PMK | Path 2: Type 0x11 ASSOC_REQ | Path 3: Tag 0x12 passphrase
+|--------------------|----------------------|-----------------------------|---------------------------------
+| Xbox key input     | 64-char hex string   | 8–63 ASCII passphrase       | 8–63 ASCII passphrase
+| Protocol packet    | CONNECT_REQ (0x07)   | WPA_ASSOC_REQ (0x11)        | CONNECT_REQ (0x07)
+| Firmware side      | Patch case 0x10      | Add Type 0x11 handler       | Add case 0x12
+| PMK computation    | Xbox pre-computes    | Firmware runs PBKDF2        | Firmware runs PBKDF2
+| Worker task needed | No                   | Yes (PBKDF2 ~100–200ms)     | Yes (PBKDF2 ~100–200ms)
+| Capability unlock  | Byte 174 bit 0x10    | Byte 174 bit 0x10           | Byte 174 bit 0x10
+| Complexity         | Lower                | Medium                      | Medium
+```
+
+**Recommendation**: Path 1 is the simplest for a patched firmware or emulator. The Xbox
+already sends a valid 32-byte PMK for 64-hex input. Path 2 is preferable for normal user
+experience (most users enter ASCII passphrases, not 64-hex PMKs). Both require setting
+HANDSHAKE_RESP byte 174 bit 0x10 to unlock the WPA PSK menu option.
+
+### Additional Change Required (Both Paths)
+
+`wlan_get_encryption_type()` currently only returns `0x00` (none), `0x01` (WEP), `0x02`
+(WPA/WPA2 generic). Two new constants must be defined for the XPP Tag 0x11 handler so the
+adapter correctly reports its active cipher mode:
+
+```c
+XPP_SEC_TKIP = 0x03   // WPA-TKIP
+XPP_SEC_CCMP = 0x04   // WPA2-AES-CCMP
+```
+
+---
+
+## Implementation Checklist
+### Phase 1: Core Infrastructure ✅
+- [ ] Raw Ethernet socket (EtherType 0x886f)
+- [ ] UDP socket listener (port 2002)
+- [ ] RFC 1071 checksum implementation
+- [ ] HMAC-SHA1 authentication
+- [ ] Packet parser for XPP Headers
+- [ ] Load secrets (hmac_key.bin, hmac_salt.bin, auth_copyright.bin)
+
+### Phase 2: Discovery & Authentication ✅
+- [ ] Type 0x0d UDP discovery listener
+- [ ] Type 0x0e UDP discovery response
+- [ ] Type 0x01 handshake request handler
+- [ ] Type 0x02 handshake response builder
+- [ ] HMAC signature for Type 0x02
+
+### Phase 3: Network Operations ✅
+- [ ] Type 0x03 networks list request handler
+- [ ] Wi-Fi scan integration (iw/nmcli/wpa_cli)
+- [ ] Type 0x04 networks list response builder
+- [ ] 61-byte network slot encoding
+- [ ] Signal strength conversion (dBm 0-255)
+
+### Phase 4: Connection Management ✅
+- [ ] Type 0x07 TLV parser
+  - [ ] Tag 0x01/0x04 (SSID)
+  - [ ] Tag 0x02 (Channel for ad-hoc)
+  - [ ] Tag 0x09 (Network mode)
+  - [ ] Tag 0x0A (Password/WEP key)
+  - [ ] Tag 0x0B-0x0E (WEP multi-key)
+- [ ] Type 0x08 connect response
+- [ ] Wi-Fi connection integration (wpa_supplicant)
+- [ ] SavedProfile structure (flash simulation)
+
+### Phase 5: Keepalive & Monitoring ✅
+- [ ] Type 0x09 beacon request handler
+- [ ] Type 0x0a beacon response builder
+- [ ] 5-second beacon timeout detection
+- [ ] Connection state machine
+- [ ] Type 0x05/0x06 periodic status updates
+
+### Phase 6: Advanced Features (Optional)
+- [ ] Type 0x00 UDP echo handler
+- [ ] MAC address pairing (mac.dat)
+- [ ] Region code support (Tag 0x12)
+- [ ] Static IP configuration (Tags 0x06-0x08)
+- [ ] WEP-128 support (Tag 0x0F)
+- [ ] Multi-adapter support
+
+### Phase 7: WPA/WPA2 (Firmware Patch)
+**Choose one path - see [WPA/WPA2 Implementation](#wpa-wpa2-implementation)**
+
+**Path 1 - Xbox sends PMK (Recommended)**:
+- [ ] Patch `XPP_Parse_Entry()` case 0x10 to store 32-byte PMK to `G_WPA_PMK`
+- [ ] Implement `eapol_handle_key_exchange()` body:
+  - [ ] ANonce/SNonce exchange
+  - [ ] PTK derivation via PRF-512(PMK, ANonce, SNonce, MACs)
+  - [ ] MIC verification on handshake msg 3
+  - [ ] PTK install via `ath_hal_set_key_cache_entry()`
+  - [ ] GTK unwrap and install via `ath_hal_install_hw_key()`
+  - [ ] Send handshake msg 4 confirmation
+- [ ] Add `XPP_SEC_TKIP = 0x03` and `XPP_SEC_CCMP = 0x04` to `wlan_get_encryption_type()`
+
+**Path 2 - Firmware calculates PMK (Alternative)**:
+- [ ] Allocate `G_WPA_Passphrase[64]` in NVRAM
+- [ ] Patch `XPP_Parse_Entry()` case 0x10 to store raw passphrase
+- [ ] Wire `XPP_PBKDF2_F_Block()` into `wireless_worker_task()` async signal
+- [ ] All items from Path 1 `eapol_handle_key_exchange()` above
+- [ ] Add `XPP_SEC_TKIP = 0x03` and `XPP_SEC_CCMP = 0x04` to `wlan_get_encryption_type()`
+
+---
+
+## Packet Flow Timing Diagrams
+
+### Initial Connection Sequence
+```
+Time  Xbox                    Adapter                   State
+─────────────────────────────────────────────────────────────────
+0.0s  Type 0x01 ────────>                              DISCONNECTED
+      (Challenge)           
+                            Compute HMAC
+                            Build status
+0.1s                  <──────── Type 0x02              HANDSHAKE_DONE
+                                (HMAC + Wi-Fi Status)
+
+1.0s  Type 0x09 ────────>                              
+      (Beacon #1)           Verify signature
+1.1s                  <──────── Type 0x0a
+                                (Security: 02 80 03 00)
+
+2.0s  Type 0x09 ────────>                              
+      (Beacon #2)           Check association
+2.1s                  <──────── Type 0x0a
+                                (Security: 02 80 03 00)
+
+3.0s  Type 0x09 ────────>                              
+      (Beacon #3)           Link confirmed
+3.1s                  <──────── Type 0x0a              LINKED ✓
+                                (Security: 02 80 03 00)
+─────────────────────────────────────────────────────────────────
+```
+
+### Ongoing Operation (Connected State)
+
+```
+Time  Xbox                    Adapter                   Notes
+─────────────────────────────────────────────────────────────────
+0s    Type 0x09 ────────>                              Keepalive
+      (Beacon)
+0.1s                  <──────── Type 0x0a              Status OK
+
+2s    Type 0x05 ────────>                              Status query
+      (STATUS variant)      Read Wi-Fi stats
+2.1s                  <──────── Type 0x06        Dashboard update
+                                (Signal: 75%, Chan: 6)
+
+4s    Type 0x09 ────────>                              Keepalive
+4.1s                  <──────── Type 0x0a              Status OK
+
+6s    Type 0x05 ────────>                              Status query
+6.1s                  <──────── Type 0x06       Dashboard update
+
+... (Repeat every 1-2 seconds) ...
+─────────────────────────────────────────────────────────────────
+```
+
+### Network Discovery Flow
+
+```
+Time  Xbox                    Adapter                   Action
+─────────────────────────────────────────────────────────────────
+0s    [User opens Network List in Dashboard]
+
+0.1s  Type 0x03 ────────>                              Scan request
+      (Network List Req)    
+                            Start Wi-Fi scan
+                            Scan channels 1-11
+                            Collect beacons
+                            (Takes 50-900ms)
+
+0.8s                  <──────── Type 0x04              Results ready
+                                (16 networks × 61 bytes) //Max limit
+
+
+      [Dashboard displays network list]
+─────────────────────────────────────────────────────────────────
+```
+
+### Connection to New Network
+
+```
+Time  Xbox                    Adapter                   Action
+─────────────────────────────────────────────────────────────────
+0s    [User selects "MyNetwork" and enters password]
+
+0.1s  Type 0x07 ────────>                              Connect request
+      (TLV: SSID, Pwd,      Parse TLV
+       Security, Region)
+                            Extract config
+0.2s                  <──────── Type 0x08              Confirm
+                                (Result: 0x00 = OK)
+
+                            [Adapter starts connecting...]
+                            Associate to AP
+                            WPA handshake
+                            DHCP request
+                            (Takes 2-5 seconds)
+
+5.0s  Type 0x08 ────────>                              ARP validation
+      (UDP ASSOCIATE)       
+5.1s                  <──────── UDP ACK                
+                                (Empty payload)
+                            Send ARP request
+5.2s  ARP Reply ────────>                              Network OK
+
+      [Connection established - return to beacon cycle]
+─────────────────────────────────────────────────────────────────
+```
+
+### Watchdog Timeout Scenario
+
+```
+Time  Xbox                    Adapter                   State
+─────────────────────────────────────────────────────────────────
+0s    Type 0x09 ────────>                              LINKED
+      (Last beacon)
+0.1s                  <──────── Type 0x0a
+
+      [Xbox crashes / network cable unplugged]
+
+5s                            5s beacon timeout         STANDBY
+                            Radio stays on
+                            Stop routing packets
+
+30s                           30s watchdog timeout      ERROR
+                            Call net_set_error_state
+                            Shutdown Wi-Fi radio
+                            Enter low-power mode
+
+      [Xbox reboots]
+
+60s   Type 0x01 ────────>                              Recovery
+      (Handshake)           Full re-auth required
+─────────────────────────────────────────────────────────────────
+```
+
+---
+
+## 5. DHCP Implementation & XPP Interaction
+
+### 5.1 Overview
+The MN-740 operates as a **Layer 2 Transparent Bridge**. While it does not act as a DHCP client itself for its primary function, it performs **Passive DHCP Snooping** to maintain its internal state. The adapter "listens" to the DHCP handshake between the Xbox console and the network Gateway to populate its internal status registers.
+
+### 5.2 DHCP Snooping Mechanic
+When the Xbox Console initiates a DHCP transaction, the adapter’s firmware intercepts specific UDP packets on **Ports 67 (Server)** and **68 (Client)**.
+
+1. **Intercept**: The firmware monitors traffic for the **DHCP Magic Cookie**: `0x63 0x82 0x53 0x63`.
+2. **Filter**: It specifically looks for **Option 53 (Message Type)** with a value of `0x05` (**DHCP ACK**).
+3. **Extraction**: Upon detecting an ACK, the firmware extracts the `yiaddr` (Your IP Address) and **Option 54 (Server Identifier)**.
+
+
+### 5.3 Relationship to Type 0x02 (Status Response)
+The IP address captured during snooping is mirrored in the **XPP Type 0x02** handshake response. This allows the Xbox Dashboard to verify that the wireless bridge has successfully bridged the console onto the local subnet.
+```
+Field     | Offset | Size    | Description
+----------|--------|---------|----------------
+Current IP| 0x12   | 4 Bytes | The IP address extracted from the last seen DHCP ACK.
+Server ID | N/A    | 4 Bytes | Internal only; used to detect Gateway changes/roaming.
+```
+
+###DHCP Info
+```
+ Component           | Value      | Role
+---------------------|------------|-----------------------
+ **DHCP Port (Src)** | 68         | Xbox Console (Client)
+ **DHCP Port (Dst)** | 67         | Router/Gateway (Server)
+ **Option 53**       | 0x05       | DHCP ACK (Triggers IP Cache Update)
+ **Option 54**       | IP Address | Server Identifier (Gateway IP)
+ **Option 51**       | 4 Bytes    | Lease Time (Used for internal timeout logic)
+```
+### DHCP Sequence
+**1. DHCP DISCOVER**
+```
+Adapter → Broadcast (255.255.255.255:67)
+Source Port: 68
+Contains: Client MAC, requested IP (if cached)
+```
+
+**2. DHCP OFFER**
+```
+Server → Broadcast (255.255.255.255:68)
+Contains: Offered IP, subnet mask, gateway, DNS, lease time
+```
+
+**3. DHCP REQUEST**
+```
+Adapter → Broadcast (255.255.255.255:67)
+Contains: Requested IP, server identifier (Option 54)
+```
+
+**4. DHCP ACK**
+```
+Server → Adapter (unicast or broadcast)
+Contains: Confirmed IP configuration
+```
+
+> **NOTE on Static IP Behavior:** If the Xbox is configured with a Static IP, no DHCP ACK will traverse the bridge. In this scenario, the `0x12` field in the Type 0x02 response will remain `0.0.0.0` unless the Xbox explicitly pushes the configuration to the adapter using **XPP Tag 0x04**.
+
+### Session Lifecycle
+
+**1. Session Creation (Type 0x01 Handshake)**
+```
+Xbox → Type 0x01 (Challenge)
+Adapter generates:
+  - New session ID (incremented from previous)
+  - Session handle (pointer to session context)
+  - Security state = PENDING
+  - Link state = DISCONNECTED
+```
+
+**2. Session Authentication (Type 0x02 Response)**
+```
+Adapter → Type 0x02 (HMAC signature valid)
+Update states:
+  - Security state = AUTHENTICATED
+  - Link state = LINKED (after 3 beacons)
+```
+
+**3. Session Active (Beacon Exchange)**
+```
+Continuous Type 0x09/0x0a exchange
+Security state = AUTHENTICATED
+Link state = ACTIVE
+Session ID remains constant
+```
+
+**4. Session Timeout (30-second watchdog)**
+```
+No traffic from Xbox MAC for 30 seconds:
+  - Security state = TIMEOUT
+  - Link state = ERROR
+  - Session handle invalidated
+Requires new Type 0x01 handshake
+```
+
+### Security State vs Link State
+**Security State** (Authentication):
+- `PENDING`: Challenge sent, awaiting response
+- `AUTHENTICATED`: Valid HMAC received
+- `TIMEOUT`: No activity timeout
+- `REJECTED`: Invalid HMAC or malformed packet
+
+**Link State** (Connection):
+- `DISCONNECTED`: No association
+- `LINKED`: Handshake complete, beacons starting
+- `ACTIVE`: Regular beacon exchange (every 1 second)
+- `ERROR`: Watchdog timeout or fatal error
+
+**Independence**: Security can be `AUTHENTICATED` while link is `ERROR` (e.g., beacon timeout)
+
+### Virtual File Descriptor
+
+```c
+// Firmware-verified (NML_bin.h)
+struct XPP_VirtualFileDescriptor {
+    char filename[8];      // "mac.dat"
+    char magic_header[8];  // "AMACAEPM"
+    byte metadata[16];     // Internal layout NOT decoded — see section 6.2
+};
+```
+
+### AMACAEPM Magic Header
+**Purpose**: Integrity check for paired Xbox configuration — firmware-verified
+**Expansion** ("Adapter MAC Address & Endpoint Manager"): NOT firmware-verified, inferred label only
+
+### File Structure
+⚠ The previously documented 32-byte field breakdown (Paired Xbox MAC at 16-21, Flags at 22-23,
+Timestamp at 24-27, CRC32 at 28-31) and the Pairing Flags bitmask (Bit 0/1/2) are **NOT firmware-verified**
+— generated by LLM and removed. The `metadata[16]` blob internal layout is not decoded.
+
+### Pairing Process (firmware-verified behaviour)
+**Factory Reset**: `g_XPP_Paired_Flag = 0` (unpaired)
+
+**Pairing**: `CFG_Set_Paired_Xbox_MAC()` copies the Xbox MAC and sets `g_XPP_Paired_Flag = 1`,
+then calls `Flash_Commit_Settings()` + `CFG_Save_To_Flash()`
+
+**Subsequent Connections**: adapter checks source MAC against stored paired MAC via
+`NET_Register_Peer_MAC()` — only responds to the paired Xbox MAC
+
+### Security Model
+**Pairing Lock**: Once paired, adapter only responds to that Xbox MAC (firmware-verified)
+**Reset**: Factory reset clears paired state (firmware-verified)
+
+
+### 5.5 The "IP Mismatch" Logic
+If the IP address reported in the Type 0x02 response does not match the IP the Xbox is currently using, the console may initiate a **Type 0x01 (Handshake Request)** to re-sync the adapter. If the adapter continues to report `0.0.0.0`, the Xbox Dashboard will trigger the "Wireless Adapter is connected but has no IP" error message.
+
+---
+
+## Firmware Version Detection
+
+The MN-740 reports firmware version in Type 0x02 handshake response at offset 136 (32 bytes).
+
+### Known Verified Firmware Versions (Not extensive)
+```
+ Version  | Release    | Notes
+----------|------------|-------
+ 1.0.2.21 | 2004       | Early production firmware
+ 1.0.2.26 | 2005       | Final production firmware (most common)
+ 1.0.2.28 | Unreleased | Debug/development build
+```
+### Version-Specific Differences
+
+**v1.0.2.21 (Early Production)**:
+- Channel 14 (Japan) requires separate region flash update
+- DHCP client has retry bug (3 attempts max)
+- WEP key cache not implemented (slower reconnects)
+
+**v1.0.2.26 (Final Production)**:
+- Region code properly read from EEPROM at `0x800A984E`
+- DHCP client improved (10 attempts with exponential backoff)
+- WEP key cache added for fast roaming
+- Watchdog timeout increased from 20s to 30s
+- Bug fix: Hidden SSID length 0 handling
+
+**v1.0.2.28 (Debug Build)**:
+- UART debug logging enabled (115200 baud)
+- Extra validation checks in TLV parser
+- Never released to production
+- Occasionally found on developer units
+- Apparently leaked in 2020 Xbox giga leak
+
+## Known Limitations
+### Hardware Constraints
+- MN-740 released 2004 (pre-WPA2 certification)
+- 2.4GHz only (no 5GHz support)
+- 802.11b/g maximum (no n/ac/ax)
+- No WPA3/SAE support
+- Single shared HMAC key (no per-device keys)
+
+### Protocol Constraints
+- SHA1 considered weak by modern standards
+- No certificate-based authentication
+- No key rotation mechanism
+- Security types are adapter-specific values
+
+---
+
+### Required Files
+
+```
+secrets/
+  ├── hmac_key.bin          # 16 bytes (extracted from firmware)
+  ├── hmac_salt.bin         # 117 bytes (extracted from firmware)
+  └── auth_copyright.bin    # 84 bytes (extracted from firmware)
+```
+
+---
+
+###Quirky error handler string
+
+the device has a very funny error handling string as a line from the
+three stooges that is common on other dlink products:
+
+"Hey Moe, it dont woik. NYUK NYUK NYUK NYUK"
+
+Any unknown TLV tag sent will print this error on the debug serial port.
+
+---
+
+### Packet Type Dispatcher — Both Sides Confirmed Complete (Types 0x01–0x0F)
+**Source**: `switchD_00134348` (xonlinedash.xbe)
+
+The Xbox Dashboard packet type switch has a **unique handler for every type `0x01` through `0x0F`** with no fall-throughs. Cross-referencing against the adapter firmware:
+
+```
+Type  | Adapter behaviour      | Dash sends? | Notes
+------|------------------------|-------------|-----------------------------------------------
+0x01  | Handled (HANDSHAKE_REQ)| Yes         | Xbox sends; adapter responds with 0x02
+0x02  | Handled (HANDSHAKE_RSP)| No          | Adapter sends; dash receives
+0x03  | Handled (SCAN_REQ)     | Yes         |
+0x04  | Handled (SCAN_RSP)     | No          | Adapter sends; dash receives
+0x05  | Handled (INFO_REQ)     | Yes         |
+0x06  | Handled (INFO_RSP)     | No          | Adapter sends; dash receives
+0x07  | Handled (CONNECT_REQ)  | Yes         |
+0x08  | Handled (CONNECT_RSP)  | No          | Adapter sends; dash receives
+0x09  | Handled (BEACON_REQ)   | Yes         |
+0x0A  | Handled (BEACON_RSP)   | No          | Adapter sends; dash receives
+0x0B  | SILENTLY DROPPED       | Yes         | Adapter discards — confirmed from firmware counter DAT_800ce0f8
+0x0C  | SILENTLY DROPPED       | Yes         | Adapter discards — confirmed from firmware counter DAT_800ce0fc
+0x0D  | Handled (DISCOVERY)    | Yes         | UDP transport
+0x0E  | Handled (DISC_RSP)     | No          | Adapter sends; dash receives
+0x0F  | SILENT DROP (no counter)| Yes        | Adapter discards with no log, no counter
+```
+
+This confirms the adapter's silent-drop entries for types `0x04`, `0x05`, `0x0B`, `0x0C`, `0x0F` are **accurate from the adapter side**. The dashboard sends all of them but the adapter discards most. The full type space `0x01–0x0F` is exercised by the dashboard with no unknown types on either side.
+
+---
+
+## Document History
+
+**v34.0** — Hash algorithm identification from `FUN_001433b7` assembly listing.
+
+**Source**: Ghidra assembly listing for `FUN_001433b7` pasted directly.
+
+- **CONFIRMED**: `FUN_001433b7` = `MD5_Init`. The function writes the four RFC 1321 MD5 initial state constants (`A=0x67452301`, `B=0xefcdab89`, `C=0x98badcfe`, `D=0x10325476`) verbatim into the context struct, zeros the 64-byte message block buffer and both bit-count words, and writes the ASCII type tag `'MD5 '` (0x2035444d LE) at offset +0x00. All constants match RFC 1321 exactly — no ambiguity.
+
+- **CONFIRMED**: `FUN_001433f5` = `MD5_Update`, `FUN_00143523` = `MD5_Final` (by structural position in the 3-step API).
+
+- **CONFIRMED**: MD5 context struct is 92 bytes (0x5c). Layout: `[tag:4][block_buf:64][A:4][B:4][C:4][D:4][bitcount_lo:4][bitcount_hi:4]`.
+
+- **CONFIRMED**: `xpp_wpa_anonce_handler` (`FUN_0013ee56`) computes `MD5(wpa_cred_buf0 ‖ wpa_cred_buf1 ‖ challenge_data)` and returns the 16-byte digest as the `0x23c2` frame challenge response. The credential buffers at `AutoClass1+0x962` (64B) and `+0x9a2` (64B) are the WPA credentials loaded from the network profile by `xpp_fsm_start_connection`.
+
+- **NOTE**: `FUN_001433b7` has 6 callers total — 5 outside the WPA path (`FUN_0012919a` ×2, `FUN_00129396`, `FUN_001296fb`, `FUN_00129b8c`) suggesting MD5 is used elsewhere in the dashboard for non-WPA purposes (possibly HMAC-MD5 for the Type 0x02 handshake challenge response, worth verifying).
+
+
+**v33.0** — Assembly listing verification pass. All findings derived from Ghidra disassembly listings of `xpp_fsm_start_connection` (`FUN_0013dfa0`), `FUN_0013ee4f`, and `FUN_0013ee56` pasted directly from Ghidra.
+
+**Source**: Ghidra assembly listings for `FUN_0013dfa0` (full), `FUN_0013ee4f` (full), `FUN_0013ee56` (full), `xpp_fsm_fatal_error` (full, embedded in listing doc).
+
+- **CORRECTED**: ANonce buffer allocation size formula was previously documented as `(this+0x26 * 0x18c + 4)` without explanation. Assembly confirms: `AutoClass1+0x26` is the AP slot count byte; `0x18c` (396) is bytes per AP scan-result slot; `+4` is the header. The buffer stores the full scan-result table, not just an ANonce value. Pool tag is `'NETJ'` (0x4a54454e). If allocation fails, error code `0x2747` is set and `xpp_fsm_state_dispatch(0,0)` is called immediately.
+
+- **CORRECTED**: param_3 bitmask documented fully: bit0=WEP key present (`+0x8cc` bit0), bit1=hex WEP (`+0x8cc` bit1), bit2=WPA mode (allocate scan buffer, set `+0x8cc` bit2).
+
+- **CORRECTED**: `AutoClass1+0x05 bit2` was documented as the WPA/CONNECT_REQ path selector written by this function. Assembly shows this function does NOT write `+0x05` at all. The WPA mode flag written here is `AutoClass1+0x8cc bit2`. The `+0x05 bit1` is read at `0x0013e2d6` to decide the non-infra path. Write site for `+0x05` remains in an unanalysed caller.
+
+- **CONFIRMED**: `xpp_fsm_fatal_error` full assembly verified. Bypass states `0x5`/`0xc`/`0xe`/`0x16` call `xpp_fsm_timer_tick` (full reset) and return without `xpp_fsm_state_dispatch`. State `0x14` ORs an additional `0x80010000` into `+0xa78` before dispatch. All other states: OR param_2 into `+0xa78`, then `xpp_fsm_state_dispatch(0,0)`.
+
+- **RESOLVED**: `FUN_0013ee4f` is **not a function**. It is the shared epilogue (`POP EDI / POP ESI / POP EBX / LEAVE / RET 0x8`) of `xpp_wpa_inbound_frame_handler`. All 21 Ghidra XREFs are tail-JMPs (early exits). No callable behaviour, no side effects. All previous references to it as a function are retracted.
+
+- **ADDED**: `FUN_0013ee56` fully decoded as `xpp_wpa_anonce_handler`. Handles inbound `0x23c2` challenge frames. Uses a 3-step hash API (`FUN_001433b7` init / `FUN_001433f5` update / `FUN_00143523` finalise) over `wpa_cred_buf0` (+0x962) and `wpa_cred_buf1` (+0x9a2) to generate the challenge response. Sends response via `xpp_wpa_outbound_frame_builder` with `frame_type=0x23c2`, `sub_type=0x2`. On sub-type 0x2 or 0x3 from adapter: calls `xpp_fsm_wpa_state_setup(0x15)`. On sub-type 0x3 or 0x4: calls `xpp_fsm_fatal_error(0x80010000)`. Hash algorithm identity (MD5/SHA1/other) requires analysis of the hash functions themselves.
+
+**v32.0** — Source-verified corrections to Type 0x11 WPA section. All four corrections verified against both the XPP and XNET namespace copies of the affected functions in `xonlinedash_xbe.c`. No WPA wire captures exist; verification is from Ghidra decompile cross-checked between both namespaces.
+
+**Source**: `xpp_build_wpa_assoc_request` (`FUN_0013b87b` XNET copy cross-check), `FUN_0013e9c5` (inbound handler), `xpp_fsm_wpa_credential_exchange`.
+
+- **CORRECTED**: WPA_ASSOC_REQ first-attempt sub-type byte was documented as `0xF9`. The correct value is **`0x09`**. The expression `(!bVar15 - 1U & 0xF0) + 0x19` with `bVar15=true` (state 0x11) evaluates to `0xF0 + 0x19 = 0x109`, which truncates to byte `0x09`. The value `0xF9` is mathematically impossible from this expression for any boolean input. Both the XPP and XNET copies of the function produce identical code. The state 0x12 retry sub-type `0x19` was already correct.
+
+- **CLARIFIED**: Frame type word `0x6388` vs `0x123c` selection logic documented precisely. The function can send the ASSOC_REQ twice in one call. When it does, the first packet (local_c == 2) uses `0x123c` and the second (local_c == 1) uses `0x6388`, unless `fsm_state_flags & 0x80` forces `0x123c` on all sends. The prior description "retry==2" was misleading — it is the loop iteration counter, not a retry count.
+
+- **ADDED**: `local_10` progress counter pointer fully documented. Points to `this+0xa38` (`wpa_handshake_flags[0]`) for frame_type `0x21c0` frames and `this+0xa3d` (`wpa_handshake_flags[5]`) for all other frame types. Tracks per-path negotiation progress `0x01→0x02→0x03→0x04`.
+
+**v31.0** — Full disassembly of Type 0x11 bidirectional sub-protocol from `xonlinedash_xbe.c`. Console-side inbound frame handler (`FUN_0013e9c5`) and sub-TLV dispatcher (`FUN_0013d3e5`) fully decoded. `xpp_build_wpa_assoc_request`, `xpp_fsm_wpa_credential_exchange`, `xpp_fsm_retransmit`, `FUN_0013d64e`, and `xpp_fsm_state_dispatch` all confirmed.
+
+**Source**: `xonlinedash_xbe.c` — `xpp_build_wpa_assoc_request` @ `0x0013d1bb` (corrected from prior placeholder name), `FUN_0013e9c5` (inbound type 0x11 dispatcher), `FUN_0013d3e5` (sub-TLV parser), `FUN_0013d64e` (outbound frame builder), `xpp_fsm_wpa_credential_exchange`, `xpp_fsm_state_dispatch`, `xpp_fsm_retransmit`. Pasted Ghidra assembly listings for `FUN_0013d3e5` and `FUN_0013e9c5` cross-referenced against decompiled C.
+
+- **CONFIRMED**: Type 0x11 is **bidirectional** — the adapter must send type 0x11 frames back to the console to advance the WPA FSM. Without adapter-initiated frames, the console stays in state 0x11/0x12 until timeout.
+- **CONFIRMED**: Console only accepts inbound type 0x11 frames when FSM state `AutoClass1+0x8c8 >= 0x13`. Frames arriving in state 0x11/0x12 are discarded.
+- **CONFIRMED**: Three sub-protocol frame types: `0x21c0` (IP negotiation + WPA challenge), `0x23c0` (ANonce/SNonce 4-way), `0x2180` (post-auth IP config delivery).
+- **CONFIRMED**: Sub-type 0x09 carries ANonce from adapter to console. Requires `AutoClass1+0xa38 == 0x04` (console ready flag) to be accepted. Routes to `FUN_0013d64e` with tag=0x0a.
+- **CONFIRMED**: Sub-type 0x01 IP negotiation uses a two-pass loop — first pass reads, second pass writes replies. challenge token is `0x23c0` (request) / `0x23c2+0x05` (response). DHCP nonce reply is bitwise NOT of received value.
+- **CONFIRMED**: IP config tags in frame_type=0x2180: tag=0x03 → gateway (+0x8f0), tag=0x81 → DNS1 (+0x8f8), tag=0x83 → DNS2 (+0x8fc). All validated via `net_validate_unicast_ip`.
+- **CONFIRMED**: FSM advancement trigger — `local_10[0]` transitioning `0x02→0x04` inside `FUN_0013e9c5` calls `xpp_fsm_wpa_state_setup` to advance into credential exchange (0x13) or completion (0x14/0x15).
+- **CONFIRMED**: WPA_ASSOC_REQ carries **SSID** (from `wpa_assoc_ssid` / `AutoClass1+0xa0a`), not the passphrase. Passphrase/PMK arrives via earlier CONNECT_REQ (Tag 0x10 or Tag 0x12).
+- **CORRECTED** (v31.0, subsequently re-corrected in v32.0): Previous spec incorrectly stated WPA_ASSOC_REQ type byte[0x0f] is always `0x19`. v31.0 stated `0xF9` on first attempt (state=0x11), `0x19` on retry (state=0x12). **v32.0 further corrects**: the first-attempt value is `0x09` not `0xF9` — see v32.0 changelog for full derivation.
+- **CORRECTED**: Previous spec used placeholder function name `FUN_0013d1bb` for WPA_ASSOC_REQ builder. Confirmed real name: `xpp_build_wpa_assoc_request`.
+- **CORRECTED**: WPA exchange states 0x13/0x15 use `xpp_fsm_wpa_credential_exchange` (not `FUN_0013d8a5`). State 0x14 uses `xpp_fsm_retransmit` (not `FUN_0013d796`). Previous names were Ghidra auto-names before symbol recovery.
+- **UPDATED**: Path 2 in WPA Implementation section — corrected to show Type 0x11 carries SSID not passphrase, and that the adapter must implement the full 5-step bidirectional sequence.
+- **UPDATED**: Gap 2 description — now accurately describes the bidirectional nature and what the adapter must do in response.
+- **ADDED**: Full emulator implementation sequence (5 steps) in WPA Exchange States section.
+- **ADDED**: `FUN_0013d64e` documented — outbound frame builder using magic `0x4b54454e` ("NETK"). Accepts up to 4 data block pointers + lengths, concatenates into payload after fixed header.
+
+**v30.0** — Full decompile of `xpp_fsm_state_dispatch` (`FUN_0013d97f`). Both switch blocks decoded.
+
+**Source**: `xonlinedash_xbe.c` @ `0x0013d97f` — complete `xpp_fsm_state_dispatch` decompile including `switchD_0013d9f2` (action dispatch) and `switchD_0013dbbc` (timeout scheduler). Also: `FUN_0013de56` (response-received state transition handler), `FUN_0013cc41` (reset cleanup — confirmed field snapshot logic).
+
+- **CONFIRMED**: State 0x18 generates a **169.254.x.x link-local IP** (RFC 3927) in `AutoClass1+0x8f0`. First attempt: deterministic from MAC bytes (`MAC[0]^MAC[2]^MAC[4]` and `MAC[1]^MAC[3]^MAC[5]`, each mod 0xfe+1). Retries: random via `net_prng()`. Prefix 0xa9fe (169.254) is hardcoded.
+- **CONFIRMED**: State 0x09 bit2 guard at `AutoClass1+0x05` — if bit2 clear → WPA abort path (OR `+0xa78` with 0xc0000000, goto state 0x00); if bit2 set → goto state 0x17 (re-send CONNECT_REQ).
+- **CONFIRMED**: State 0x0c signals IP readiness via `KeSetEvent(this+0xaf8)` — the `AutoClass1+0xaf8` pointer is an event object used to wake the dashboard IP stack.
+- **CONFIRMED**: States 0x0d/0x0e use a **binary-approach adaptive scheduler** — each tick advances halfway to the AP beacon slot target (stored in `+0x928`/`+0x92c`), floored by minimum step `+0x1f`. Never overshoots the slot.
+- **CONFIRMED**: State 0x0c timeout = `(this+0x924 × 5) + this+0x920` — the wait scales with the number of APs found during scan (longer if more APs).
+- **CONFIRMED**: State transition handler `FUN_0013de56` — advances FSM on response: 0x02→0x00, 0x03→0x04/0x05, 0x07→0x09, 0x0b→0x0f, 0x18/0x19→0x1a.
+- **ADDED**: 19 new AutoClass1 field offsets confirmed: `+0x05`, `+0x12`, `+0x1d`, `+0x1f`, `+0x23`, `+0x24`, `+0x25`, `+0x2a`, `+0x2d`, `+0x2f`, `+0x30`, `+0x1d8`, `+0x268`, `+0x26c`, `+0x920`, `+0x924`, `+0x928`, `+0x92c`, `+0x930`, `+0x0a68`, `+0x0af8`.
+- **NOTE**: `this+0x05` bit2 meaning (`connection_mode_flags`) — exact write-site not yet found. Tentative: set from network profile before FSM start; bit2=1 means CONNECT_REQ path (WEP/Open), bit2=0 means WPA path.
+
+**v29.0** — Tag 0x09 link state resolved; CONNECT_RESP codes corrected; signal bar thresholds source-verified; new channel 9 wire captures integrated; Ghidra rename script produced.
+
+**Source**: `lysten_open_ch9_b.log`, `lysten_wep64_ch9_b.log`, `lysten_wep128_ch9_b.log`, `lysten_wep128hex_ch9_b.log`, `lysten_wep128hex_ch9_b2.log`, `lysten_wep128hex_ch9_bg.log`, `lysten_adhocs_wep_shared_key.log`. Ghidra decompile of `FUN_000a2fea` (`xpp_rssi_to_signal_bars`), `FUN_000a2f8a`–`FUN_000a2fb1`, `FUN_000a2fbe`, `FUN_000a2fd4`, `FUN_00079514`.
+
+- **FIXED**: Table A Tag 0x09 — `0x04` is **WEP-128 infrastructure linked**, not ad-hoc. Value echoed from CONNECT_REQ Tag 0x09 via `FUN_000a2a7b`: enc=2→`0x02`, enc=3→`0x04`. Wire-verified across four independent WEP-128 infrastructure captures.
+- **FIXED**: CONNECT_RESP result codes — removed fabricated codes `0x05` and `0xFF`. Updated codes 0x00–0x04 with dashboard `error_code` mappings from `my_handle_connect_to_ssid_response`.
+- **CONFIRMED**: CONNECT_RESP body — fixed 60-byte Ethernet frame. Result byte + 3 zero-pad bytes. All 9 test captures return `0x00`.
+- **CONFIRMED**: WEP multi-key UI design — dashboard only offers one key entry field. `FUN_000a2cf5` (`AutoClass1_set_wep64_key_all_slots`) is the sole WEP-64 key setter and mirrors the single user input across all 4 slot buffers (`0xf72`/`0xf77`/`0xf7c`/`0xf81`), setting all 4 dirty flags simultaneously. The firmware and protocol support independent keys but the Xbox UI never exposes key index selection.
+- **CONFIRMED (NEW)**: Signal bar thresholds — fully source-verified from `xpp_rssi_to_signal_bars` (`FUN_000a2fea`). Five thresholds: >-91/-82/-72/-68/-58 dBm for bars 1–5. Previous guessed table replaced. Guards: `AutoClass1+0x0d == 0x01` AND `+0x40 != 0x80000001`.
+- **ADDED**: `AutoClass1_copy_rx_state_to_cfg` (`FUN_000a2fbe`) — copies 0x4c DWORDs from `+0xd94` → `+0xec4` (received state → config block).
+- **ADDED**: `AutoClass1_copy_cfg_to_rx_state` (`FUN_000a2fd4`) — reverse direction copy.
+- **ADDED**: Wire-Verified ADAPTER_INFO_RESP Examples (Channel 9 Captures) section.
+- **ADDED**: Ad-hoc observation — no ADAPTER_INFO polling after CONNECT_RESP in ad-hoc mode.
+- **ADDED**: Ghidra rename script `rename_xonlinedash_xpp_v2.py` — 53 functions/globals renamed, all `[OK]`.
+
+**v28.0** — Assembler-verified decode of `my_handle_beacon_response` (`xonlinedash_xbe.c` @ `0x000a3563`).
+- **ADDED**: Dashboard handler section to BEACON_RESP. Full field map for AutoClass1 offsets +0x3c, +0x40, +0x44, +0x48, +0x49 with assembler-confirmed values.
+- **CONFIRMED**: body byte[0] valid range is 0x00–0x03 only — CMP/JA guard at `0x000a3584` rejects any value > 0x03. All previously noted "high-byte" BEACON_RESP body values were misread frame offsets (checksum bytes, not body).
+- **NEW**: Case 0x00 with body[1] ≥ 0xa6 path documented — stores raw RSSI in ECX+0x48, body[2] in ECX+0x49, writes 0x00 to ECX+0x3c (DL=0 from earlier XOR, never reloaded).
+- **NEW**: `FUN_000a2af6` called pre-switch with (byte[0], byte[1]) for all valid packets — return value discarded. Likely RSSI smoothing. Assembler needed to confirm.
+- **NEW**: ECX+0x40 confirmed always written as 0x00000000 (EDX permanently zero from XOR EDX,EDX).
+- **NEW**: ECX+0x44 `is_infrastructure` boolean confirmed as SETNZ on (state ≠ 0x03).
+
+**v27.0** — Full decode of `lysten_setmac_host_ppoe_and_connect_to_live.log` (17 packets). Capture context: router was **powered off**, adapter holding saved profile but not associated, `aa:bb:cc:dd:aa:ff` is the user's deliberate ISP-bypass clone MAC, adapter hardware MAC is `00:12:5a:33:fa:31`. New and corrected findings:
+- **Tag 0x14 MAC clone mechanism wire-confirmed**: Pkt#17 shows HANDSHAKE_REQ from `aa:bb:cc:dd:aa:ff` after two normal sessions from `00:0d:3a:50:22:73`. Clone MAC activated between sessions via settings XBE.
+- **Tag 0x06 BSSID zeros = AP not present**: `00:00:00:00:00:00` because router was off and adapter was not associated. Confirmed Tag 0x06 is the live current BSSID, not a stored config value. Previous erroneous "DHCP timing" explanation removed.
+- **Tag 0x09 link state clarified**: `0x01` = no link. This is the normal state during the ADAPTER_INFO query phase (before CONNECT_REQ). Previous notes incorrectly attributed it to a DHCP state-machine lag — corrected throughout.
+- **Tag 0x01 IP = saved static IP from flash**: returned regardless of current connection state. Router was off but IP `192.168.1.150` still reported.
+- **Tag 0x04 = 0x01 = 802.11b-only mode** (not merely "radio on"). Radio configured for b-only despite SSID `open_ch9_bg`.
+- **PPPoE out-of-band note added**: PPPoE credentials are configured via the adapter's HTTP admin interface, not via XPP. Absent from all wire captures by design.
+- **Adapter hardware MAC confirmed**: `00:12:5a:33:fa:31` is the MN-740's own hardware MAC (D-Link product, user-confirmed). This is distinct from the ISP-facing clone MAC `aa:bb:cc:dd:aa:ff`.
+
+**v26.0** — Tag 0x03 corrected. Previous "WEP Shared-Key Auth Password" description was wrong. Full re-analysis of `lysten_password.log` confirms: adapter already had a saved profile, no WEP network involved. Tag 0x03 is solely the **XPP admin password / console pairing lock** — sent to set or clear the password that prevents unauthorised consoles from reconfiguring the adapter. Pkt#9 sets `"aabbccddee"` (len=10); Pkt#99 clears it (len=0x00). Second HANDSHAKE_REQ from different console MAC at Pkt#199 confirms this is a pairing/locking scenario. Table B row and §Tag 0x03 section rewritten.
+
+**v25.0** — Tag 0x14 MAC Address Cloning restored. Previous retraction rescinded. Tag reinstated with accurate status: historically logged and documented, original wire capture lost, re-capture pending. Source XBE architecture note added — MAC clone setting originates from the network setup XBE (not `xonlinedash.xbe`). Dashboard multi-XBE architecture documented. Firmware parser gap noted (no `case 0x14` in v1.0.2.26 — possible version mismatch or bridge-layer implementation).
+
+**v24.0** — Tag table corrections: Tag 0x03 dual-use, Tag 0x10 PMK name confirmed, Tag 0x12 WPA passphrase, Tag 0x14 retracted, Tags 0x81–0x85 provisioning origin documented, Wire example corrections
+
+**Source**: `FUN_000a364e`, `FUN_000a2bd3`, `FUN_000a2d51`, `FUN_000a2d81`, `FUN_000a2e3a`, `FUN_000a2e62`, `FUN_00079514`, `FUN_000795aa`, `FUN_00079633`, `XPP_Type02_0x07_FlashConfig`, `XPP_Establish_Secure_Identity_Link`, `NET_Interface_Reset_And_Reconnect` from `NML_bin.c`. Cross-referenced with all `lysten_*.log` wire captures.
+
+- **CONFIRMED**: Tag 0x10 name "PMK" is CORRECT. The 32 bytes are genuinely the WPA Pairwise Master Key — dashboard calls `FUN_00079633` which hex-decodes a 64-char user string to 32 raw bytes (standard IEEE 802.11i PSK PMK). The firmware STUB that discards it is the problem, not the tag name. Firmware `case 0x10:` simply advances `src = pbVar4 + 0x22` (34 bytes) without storing anything.
+
+- **CORRECTED**: Tag 0x03 was previously described only as "admin username for TFTP/HTTP". It has a **second use**: WEP Shared-Key authentication password transmitted in `CONNECT_REQ`. Wire-verified from `lysten_password.log` Pkt#9 — tag03 len=10 val="aabbccddee" sent alone (no SSID or security mode) when the adapter already has a stored profile. Dashboard source is `AutoClass1+0xf60`, set by `FUN_000a2bd3`. A previous analysis incorrectly identified this as a WPA passphrase — that is retracted.
+
+
+- **ADDED**: Tags 0x81–0x85 provisioning origin documented. These tags are **not sent by the dashboard** — confirmed by exhaustive search of `FUN_000a364e` and all calling functions. Origin: PC-side provisioning utility or factory test jig. Tag 0x81 (`XPP_Establish_Secure_Identity_Link`) is the adapter pairing/binding step — it registers the Xbox MAC and generates a session token. Tag 0x82 (`NET_Interface_Reset_And_Reconnect`) can undo MAC spoofing by reinstating the hardware MAC via `NET_Reinit_Interface_With_MAC`.
+
+
+- **ADDED**: Wire examples for `lysten_wep128hex_ch9_bg.log` (b+g band hex WEP, 2 TLVs, no stale TLV) and `lysten_password.log` (XPP admin password set/clear, single Tag 0x03).
+
+- **ADDED**: Dashboard `field_0xf5f` (802.11 auth algorithm selector) documented: 0x00=Open System, 0x01=Shared Key, 0x02=WPA. Set by `FUN_000a2ea3`/`FUN_000a2e8a`/`FUN_000a2ebc` respectively. Distinct from the Tag 0x11 firmware value (which only accepts 0x00 or 0x02).
+
+**v23.0** — WPA full picture: capability unlock chain, security type enum, state machine states 0x11–0x15, Type 0x11 WPA_ASSOC_REQ packet format
+
+**Source**: `FUN_0007881c`, `FUN_000a2a24`, `FUN_000a2f8a`–`FUN_000a2fb1`, `FUN_000a2dea`–`FUN_000a2e62`, `FUN_000a3106`, `FUN_000a3e95`, `FUN_0013d1bb`, `FUN_0013d796`, `FUN_0013d8a5`, `FUN_0013d97f` from `xonlinedash_xbe.c`. Cross-referenced with `NML_bin.c` firmware and `lysten_password.log`.
+
+- **CRITICAL FIX**: WPA capability stubs are NOT just cosmetic — byte 174 bit 0x10 (`field_0xd70`) directly gates the WPA PSK menu option in `FUN_0007881c`. With stock firmware stub value `0x06`, bit 0x10 is clear, `field_0xd70 = 0`, and the dashboard **never shows WPA PSK as a security option**. The user cannot select WPA at all without modifying HANDSHAKE_RESP.
+- **ADDED**: Security type enum documented — `AutoClass1+0xf5e`: 0x01=Open, 0x02=WEP-64, 0x03=WEP-128, 0x04=WPA-PSK. Set by `FUN_000a2dea`/`FUN_000a2e12`/`FUN_000a2e3a`/`FUN_000a2e62`. Capability check functions `FUN_000a2f8a`–`FUN_000a2fb1` each test one value.
+- **ADDED**: WPA connection state machine states 0x11–0x15 documented. These are separate from the WEP/open states 0x04–0x0f. States 0x11/0x12 call `FUN_0013d1bb` (WPA_ASSOC_REQ builder). States 0x13/0x15 call `FUN_0013d8a5` (WPA exchange). State 0x14 calls `FUN_0013d796` (credential exchange).
+- **ADDED**: Type 0x11 WPA_ASSOC_REQ packet format documented — built by `FUN_0013d1bb`. Broadcasts to `0xffffffffffff` (state 0x11) or unicast (state 0x12). Carries passphrase from `AutoClass1+0xa0a` as sub-tag 0x0101. Completely unhandled by stock firmware.
+- **ADDED**: WPA exchange states 0x13/0x14/0x15 — `0xa39` flags control which credential sub-tags are included. `0x962`/`0x9a2` buffers (64 bytes each) carry ANonce/SNonce material. `0xa3e`/`0xa44` carry WPA exchange fields.
+- **CORRECTED**: WPA patch path table — now documents three paths (Tag 0x10 PMK, Type 0x11 ASSOC_REQ passphrase, Tag 0x12 CONNECT_REQ passphrase). Previous "Path 2 repurposed Tag 0x10" was incorrect.
+- **CORRECTED**: `field_0xf5c` (operating mode infrastructure/adhoc) controls which WPA capability field is checked: infrastructure uses `0xd70`, ad-hoc uses `0xd74`. `FUN_000a2f0f` downgrades WPA→Open if ad-hoc+no-WPA2.
+- **CONFIRMED**: `FUN_000a2a24` return value `4` = WPA capable only reached when `field_0xd70 != 0` (byte174 bit 0x10 set) AND `field_0xd80 != 0` (byte175 bit 0x04 set). MN-740 stock values always return ≤3.
+
+**v22.0** — Type 0x07 complete audit: Tag 0x10/0x12 dash assembly + firmware + wire cross-verification
+**Source**: `FUN_000a364e` (connect request builder), `FUN_00079633` (WPA key input path), `FUN_000a2d51` (PMK setter), `FUN_000a2d81` (passphrase setter), `FUN_000794da` (key type selector), `XPP_Type02_0x07_FlashConfig` (firmware TLV parser) from `xonlinedash_xbe.c` + `NML_bin.c`. Wire-verified against `lysten_open_ch9_b.log`, `lysten_wep128_ch9_b.log`, `lysten_wep64_ch9_b.log`, `lysten_wep128hex_ch9_b.log`.
+
+- **ADDED**: Tag 0x12 — WPA raw passphrase tag. Previously undocumented. Dashboard sends Tag 0x12 when user enters an 8–63 char ASCII passphrase (not a 64-hex PMK). Source: `FUN_000a2d81()` writes passphrase to `AutoClass1+0xfb3`; `FUN_000a364e` emits Tag 0x12 when `0xff8` bit `0x40000` is set.
+- **CRITICAL FIX**: Tag 0x12 firmware behaviour — NOT a silent skip. Stock firmware has no `case 0x12`. It falls to `default:` which logs `got_unknown_%d` then executes `goto LAB_8009b120`, **aborting the entire TLV parse loop**. All tags after 0x12 in the same packet are never processed. Previous note claiming unknown tags are "ignored" was incorrect.
+- **CRITICAL FIX**: Tag 0x10 pointer advance — `src = pbVar4 + 0x22` means advance **34 bytes from the tag byte** (tag + length + 32-byte value), NOT 32 bytes from the value start. The length byte is consumed by this calculation. Emulators that advance only 32 bytes will desync by 2 bytes.
+- **ADDED**: Dashboard WPA key input decision table — `FUN_000794da()` returns key type 1=WEP40, 2=WEP128, 3=WPA. Type 3 dispatches to `FUN_00079633()` which checks input length: if exactly 64 chars (all valid hex) → sends Tag 0x10 (PMK); if 8–63 printable ASCII → sends Tag 0x12 (passphrase). Both paths set security mode 0x04 via `FUN_000a2e62()` first.
+- **FIXED**: WPA patch path table — Path 2 corrected: it is Tag 0x12 (passphrase) not a "repurposed Tag 0x10". The firmware has `wlan_pbkdf2_pmk_derive()` already present and callable; Path 2 patch adds `case 0x12` to invoke it.
+- **REPLACED**: All wire example packets — previous examples were fabricated or from unlisted log files. Replaced with exact raw bytes decoded from named log files: `lysten_open_ch9_b.log`, `lysten_wep128_ch9_b.log`, `lysten_wep64_ch9_b.log`, `lysten_wep128hex_ch9_b.log`. Full hex dumps included.
+- **FIXED**: Wire example note about unknown tags — corrected from "Any other tags are ignored" to "Unknown tags abort the parse loop". This is a firmware hard-stop, not a skip.
+- **CONFIRMED**: `FUN_000a364e` is the connect request builder — complete `0xff8`/`0xff9`/`0xffa` bitmask-to-tag mapping fully decoded and cross-referenced with wire captures. All 19 tags (0x00–0x12) confirmed with buffer offsets in `AutoClass1`.
+- **CONFIRMED**: `FUN_000a2a9b()` computes Tag 0x08 (security mode) value from `AutoClass1+0xf5e` (enc type) and `+0xf5c` (operating mode). Returns 0x10 or 0x20 only when enc type = 4 (WPA) and operating mode ≠ 0.
+- **CONFIRMED**: `FUN_000a2a7b()` computes Tag 0x09 (link state) from `AutoClass1+0xf5e`: returns 1 if enc=1, 2 if enc=2, 4 if enc=3, 0 otherwise. Maps internal enc type to XPP link state byte.
+
+**v19.0** — xonlinedash source deep-dive: unknown stubs, capability bytes, and TLV tag destinations resolved
+**Source**: `my_handle_nlb_handshake_response`, `my_handle_adapter_info_response`, `FUN_000a2a24`, `FUN_000a2a7b`, `FUN_000a2a9b` from `xonlinedash_xbe.c`
+
+- **RESOLVED**: Type 0x02 payload bytes 174–175 — previously documented as meaningless signal/quality stubs, now confirmed as **WPA cipher suite capability bitmasks**. Byte 174 = security_caps2 (WPA-TKIP/CCMP support); byte 175 = security_caps1 (cipher mode bits: open/WEP/TKIP). Full bit → `AutoClass1` field mapping table added.
+- **RESOLVED**: Type 0x02 payload byte 208 — previously documented as `XPP_Get_Link_Status_Summary_STUB()` with unknown meaning, now confirmed as **radio mode capability bitmask**: bit0=11b support, bit2=ad-hoc capable. Dashboard validates upper 5 bits (`&0xf8==0`). Wire-verified constant 0x05 in all captures.
+- **CONFIRMED**: Type 0x02 payload byte 209 — validated `< 3` by dashboard (not `< 4` as stated in v18). Stored to `AutoClass1+0xd98`. Represents DHCP/interface state.
+- **CONFIRMED**: Type 0x02 payload byte 176–179 — wire-constant `0x00000FFE` confirmed as fixed firmware capability bitmask. `bswap32()` applied by dashboard, stored to `AutoClass1+0xd99`/`0xd9d`. Previously mislabelled "uninitialised memory" in an earlier draft; that was retracted in v18 but the bitmask meaning was still unknown.
+- **CONFIRMED**: `FUN_000a2a24` (security mode classifier) uses `field_0xd70` (byte174 bit4 = WPA2 capable) and `field_0xd80` (byte175 bit2 = TKIP) to compute `AutoClass1+0xe2e` (resolved security mode). MN-740 always outputs 0 for both WPA2 bits, so this path always falls to the WEP/open branch.
+- **CONFIRMED**: Table A Tag 0x0E (current channel) stored to `AutoClass1+0xe41` (field3544_0xe41) — confirmed from `my_handle_adapter_info_response` decompile at line 88164.
+- **CONFIRMED**: Byte 174/175 prior description "signal strength" and "link quality" in firmware stub names is **misleading naming by original firmware engineers** — the actual semantics are WPA capability flags as used by the dashboard.
+- **WIRE-VERIFIED**: All new byte interpretations verified against all available captures. Every Type 0x02 packet yields identical values: b174=0x06, b175=0x07, b208=0x05, b209=0x00.
+
+**v18.0** — Full decompile integration (xonlinedash_xbe.c + xonlinedash_xbe.h)
+- **CORRECTED**: `XBV2`/`XBCP` constants are **not** wire protocol frame signatures. Fully resolved by `XONLINES::XNetLoadConfigParams` decompile: both are magic values used for HMAC integrity verification of the Xbox HDD network config volume sector. Not present on wire.
+- **CORRECTED**: HMAC verification — Section 17 updated. Dashboard uses the **identical** 16-byte static key (`cb275ff238ab61dc8799fa01ad17745e`) and identical 139-byte input layout as the adapter. Comparison is full 20 bytes (all 5 DWORDs). v17 speculation about dynamic key derivation from `console_ip + adapter_mac` and 16-byte truncation was incorrect and is retracted.
+- **ADDED**: `nlb_network_frame` struct confirmed from `xonlinedash_xbe.h` — exact field names verified.
+- **ADDED**: `AutoClass1` struct confirmed — all named fields and offsets verified from `xonlinedash_xbe.h` header output.
+- **ADDED**: Dashboard Connection State Machine section — states 0x01–0x05, timeouts, and retry counts confirmed from `my_fetch_wireless_adapter_data_probably` decompile.
+- **UPDATED**: Error codes fully confirmed — XPP wire result bytes (0x00–0x04) mapped to dashboard `error_code` values (0x80000001–0x80000004, 0xFFFF). Source: all five response handler functions in `xonlinedash_xbe.c`.
+- **UPDATED**: Type 0x02 payload — bytes 174–175 clarified: firmware writes stub values (0x06, 0x07) but dashboard reads both as capability bitfields stored to `AutoClass1+0xd68..0xd8c`. Bytes 252–253 confirmed as hardware version major/minor consumed by `FUN_000a34c8()`. Payload total = 256 bytes confirmed.
+- **CONFIRMED**: Type 0x05 request sends exactly 9 TLV tags: 0x01, 0x02, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x11. Verified from `FUN_000a3cac` decompile.
+- **CONFIRMED**: Type 0x08 response codes — wire bytes 0x00–0x04 and their dashboard handling confirmed from `my_handle_connect_to_ssid_response` decompile.
+- **CONFIRMED**: Copyright string = exactly 84 bytes (21 DWORDs). HMAC input = 139 bytes (16+6+117). `XNetRandom()` generates nonce. All confirmed from decompile.
+- **CONFIRMED**: `switchD_00134348` in `xonlinedash_xbe.c` is a **RFC 1071 checksum loop** (Duff's device unrolled), not the packet type dispatcher. Previous labelling was incorrect.
+
+**v17.0** — Xbox Dashboard disassembly integration (xonlinedash.xbe Ghidra export)
+- **ADDED**: Section "Xbox Dashboard Protocol Constants" — `XBV2` (0x58425632) and `XBCP` (0x58424350) magic values documented as observed Xbox-side constants of unknown wire significance. Found in XNET inline comparisons at 0x00131238, 0x001312fc, 0x00131242, 0x00131302.
+- **ADDED**: Section "Packet Type Dispatcher — Both Sides Confirmed Complete" — `switchD_00134348` has unique handler for every type 0x01–0x0F with no fall-throughs. Confirms adapter silent-drop entries for types 0x0B, 0x0C, 0x0F are accurate.
+- **ADDED**: Table A — Tags 0x03, 0x0A, 0x0B, 0x0C, 0x0D, 0x0F, 0x10 documented from dash `xpp_fsm_state_dispatch` (previously misidentified as `switchD_0013d9f2` read switch). Adapter falls through to `got_unknown_%d` for all unknown tags.
+- **REINSTATED**: Table A Tag 0x03 — previously marked UNIMPLEMENTED (v9.0). Xbox dash `xpp_fsm_state_dispatch` has a unique handler confirming the dash does read this tag back. Adapter stores admin identity in `G_XPP_Admin_Identity` (max 17 bytes). Adapter-side read handler behaviour still needs verification.
+- **ADDED**: Type 0x02 — "Xbox Dashboard AutoClass1 Handshake Context" table documenting how the dash stores decoded Type 0x02 fields internally: raw strings at 0xbb8/0xbd9, Unicode copies at 0xbfa/0xc3c/0xefa. Confirms SSID is stored as UTF-16LE at `AutoClass1+0xefa` after conversion via `my_convert_char_to_wchar_string`.
+- **UPDATED**: Section 16 HMAC-SHA1 — added "Xbox Dashboard HMAC Verification" subsection. Function `my_calculate_handshake_hmac` (0x000a2936) confirmed: takes `cluster_ip` + `source_mac` parameters; `hmac_result[20]` buffer but `hmac_key[16]` — dashboard compares only first **16 bytes** of the 20-byte HMAC-SHA1 digest. Key derivation from console IP + adapter MAC documented. Open question: reconciliation with adapter-side static ROM key noted.
+- **UPDATED**: Section 17 HMAC Security Model — authentication flow diagram updated to show 16-byte truncated comparison on dash side. Dashboard verification key binding to console IP + adapter MAC documented.
+- **NOTED**: Write tag coverage cross-check — Table B (adapter write tags 0x00–0x11, 0x12, 0x81–0x85) is documented. Tag 0x12 exists in dash write path but has no firmware case — falls to `got_unknown_%d` which **aborts the parse loop** (not a silent skip-and-continue). Tags 0x13 and above similarly abort. Protocol space above 0x12 in the dash write switch is unused; any packet containing these tags will have all subsequent TLVs silently dropped by firmware. Note: values 0x12–0x1B seen in `xpp_fsm_state_dispatch` are FSM connection states, not protocol tags — they were previously misidentified.
+
+**v14.0** — Ghidra source re-scan (NML_bin.c/NML_bin.h updated source) — variable name corrections and new findings
+- **FIXED**: Tag 0x83 — variable name corrected from `g_CFG_Net_Reset_Param` (non-existent) to `g_CFG_Reconnect_Mode` in both Table A and Table B. Factory default = 1 added.
+- **FIXED**: Tag 0x84 Table A — row name corrected from "Rate Capability Index (`g_XPP_Rate_Capability_Index`)" to "Max Channel (`g_CFG_Max_Channel`)". `g_XPP_Rate_Capability_Index` does not exist in firmware.
+- **FIXED**: Tag 0x84 Table B — write action corrected from `g_XPP_Rate_Capability_Index = val` to `g_CFG_Max_Channel = val` with clamping note.
+- **FIXED**: Tag 0x84 section header — renamed from "rate Index chip revision table" to "channel range table". Column "Chip Rev" corrected to "Reg Domain" — these are EEPROM regulatory domain codes read by `determine_hw_channel_range()`, not chip revision codes. Table values corrected to show channel numbers (not rate indices).
+- **FIXED**: Tag 0x85 Table B — firmware variable corrected from `g_CFG_TX_Rate_Validated` (non-existent) to `g_CFG_TX_Rate_Index`.
+- **FIXED**: Type 0x08 UDP (section 10b) — added note that the echo reply carries XPP type byte `0x00`, not `0x08`. Firmware zeroes the type byte before retransmitting.
+- **ADDED**: Type 0x0F — documented as completely silent drop (no response, no counter, no log). Firmware-verified.
+- **ADDED**: Type 0x04 — stale cache behaviour documented: adapter returns last successful scan results if current scan finds zero networks. Never sends empty list.
+
+**v13.0** — b vs bg mode analysis + Tag 0x11 deep firmware investigation + LLM hallucination audit
+- **FIXED**: Type 0x07 packet format — removed erroneous "Connection Mode Byte" and "Fixed Block `04 01 01`" interpretation. First payload byte is the TLV count. `04 01 01` is Tag 0x04 (Operating Mode), length 1, value 1 — a standard TLV entry. The mode value table (0x03/0x04/0x06/0x0a) has been removed.
+- **FIXED**: Type 0x07 wire examples — "Mode byte" labels replaced with "TLV count"; "Fixed block" rows replaced with decoded Tag 0x04 entries.
+- **FIXED**: Byte 218 / Tag 0x11 in ADAPTER_INFO_RESP — replaced incorrect table with full firmware-verified dual-path analysis: PATH 1 (radio live, Marvell 88W8310 HAL substate) and PATH 2 (NVRAM `g_XPP_Auth_Mode_Enabled`). Documents that value `2` for `g_XPP_Auth_Mode_Enabled` is dead code — only `CFG_Set_XPP_Auth_Mode(0x00)` and `CFG_Set_XPP_Auth_Mode(0x02)` ever write to this variable. Tag 0x11=`0x01` via PATH 2 is unreachable.
+- **FIXED**: Tag 0x11 = `0x01` origin documented — only reachable via PATH 1 (Marvell HAL substate = 0). The substate byte at `driver_ctx+0x29` is written by the proprietary Marvell 88W8310 HAL binary blob, not by any firmware function Ghidra resolves. No `sb rX, 0x29(rY)` instruction found in firmware. Meaning of substate 0 unknown. Never observed on wire.
+- **FIXED**: BEACON_RESP wire examples — auth=`0x03` label corrected from "WEP linked ✅" to "802.11 association in progress". `0x03` fires after any CONNECT_REQ regardless of security type, not only WEP.
+- **FIXED**: Tag 0x11 workflow section — corrected value meanings. `0x01` in CONNECT_REQ is silently ignored (not in whitelist). Only `0x00` and `0x02` are accepted.
+- **CONFIRMED**: `g_XPP_Auth_Mode_Enabled` has exactly 3 write sources (XREF-verified): `CFG_Set_XPP_Auth_Mode` (2 writes), `Flash_Commit_Settings` (1 write, hardcodes factory default = 1). No other writer exists in firmware.
+- **REMOVED**: Signal strength conversion table (dBm ↔ 0-60/0-100/0-255 with bar labels) — was LLM-generated with no firmware basis. Replaced with firmware-verified facts.
+- **FIXED**: smoothed_rssi `0x80` note — clarified as BSS uninitialised memory state, not an explicit firmware write. `0xba` seed is firmware-verified.
+- **REMOVED**: mac.dat detailed field breakdown (HW Revision, Security Flags, Region Code, Timestamp, CRC32, pairing flags bitmask) — LLM-generated, not in firmware. `metadata[16]` layout undecoded.
+- **REMOVED**: "Man-in-the-Middle drop" behaviour for mismatched mac.dat Security Flags — invented.
+- **REMOVED**: Type 0x08 error codes 0x05–0x07 and all string descriptions — not in firmware source.
+- **CONFIRMED**: "Hey Moe, it dont woik. NYUK NYUK NYUK" string — real, at `0x800ab8e4`, called by `STUB_Stooges_Error_Handler` (firmware-verified).
+
+**v12** — WEP infrastructure log analysis (lysten_wep_secured_* logs)
+- **FIXED**: BEACON_RESP Wire-Verified Examples — corrected rate byte for `lysten_wep_secured_128_bit_ascii.log` Pkt#4 from `0x6c` (54 Mbps) to `0x60` (48 Mbps). The previous value was inferred; actual wire capture shows 0x60.
+- **FIXED**: BEACON_RESP Auth State table — clarified that `0x02` is NOT exclusively "idle". It is the steady-state auth byte for open/unencrypted networks after full connection. Only WEP transitions to `0x03`.
+- **ADDED**: Auth byte `0x03` wire-verified — transitions from `0x02` to `0x03` after a WEP CONNECT_REQ is committed (confirmed in `lysten_wep_secured_128_bit_ascii.log` Pkt#14 and `lysten_wep_secured_64_bit_ascii.log` Pkt#14).
+- **FIXED**: Table A Tag 0x08 — corrected from "Link State Bitmask" to "Auth Type in response". In ADAPTER_INFO_RESP, `0x02` = open network, `0x04` = WEP active. Wire-verified from both WEP-64 and WEP-128 captures.
+- **ADDED**: Wire-verified ADAPTER_INFO_RESP WEP examples — both 128-bit (`ssid=wpa_128`) and 64-bit (`ssid=wpa_64`) sessions fully decoded. Confirms `Tag 0x08 = 0x04` as the WEP indicator in responses.
+- **ADDED**: CONNECT_REQ structure — documented mode byte (byte 0 of payload) and conditional fixed block `04 01 01`. Mode values `0x03`, `0x04`, `0x06`, `0x0a` wire-verified.
+- **ADDED**: Wire-verified CONNECT_REQ examples for open network and both WEP variants (128-bit single key, 64-bit 4-key).
+- **CONFIRMED**: WEP connections to new router (BSSID `02:1d:aa:xx:c6:50`, CH 11, IP 192.168.1.181) are genuine — adapter negotiated WEP encryption despite router's newer firmware. Tag 0x08=0x04 in response confirms WEP was active.
+
+**v11.0** — Real hardware WAN connection log verification + Ghidra corrections
+- **FIXED**: Byte 217 in Type 0x02 — renamed `WLAN_Get_Status_Arbiter()` to correct Ghidra name `XPP_Get_Channel_Or_Fallback()`. Function confirmed in NML_bin.c at the call to `wlan_freq_to_channel_number(0)` when auth_status==0, else `g_CFG_Max_Channel`.
+- **FIXED**: Table A Tag 0x05 description — updated to use correct function name `XPP_Get_Channel_Or_Fallback()`.
+- **FIXED**: Rate code in Type 0x0a BEACON_RESP — old `lysten_open_connect_with_wan_ch_3.log` showed `0x16` in early post-connect beacons due to incorrect Ghidra rate code label. Corrected Ghidra + new logs confirm `0x6c` (54 Mbps) is correct for infrastructure once associated. `0x16` is exclusively ad-hoc / pre-association default.
+- **ADDED**: Wire-verified ADAPTER_INFO_RESP decoded example — open network channel 3 with real WAN connection (lysten_open_connect_with_wan_ch_3_new.log Packet #16). Documents Tag 0x05 = 0x03 confirming raw channel number encoding.
+- **ADDED**: Wire-Verified Open Network WAN Connection workflow section — first real-hardware WAN internet connection log captured Wed Mar 4 2026. Documents observed beacon behaviour, ADAPTER_INFO polling cadence, transient reserved-byte anomalies during re-association, and confirmed stable `02 80 6c 00` payload.
+- **NOTED**: Transient BEACON_RESP anomalies during re-association (e.g. `d5 82 00 d7`, `08 e8 00 d7`) — Byte 3 (reserved) is NOT always 0x00 in these transitional states, contrary to what the firmware stub implies. These are brief and harmless.
+- **NOTED**: Tag 0x09 = `0x01` (no link) during ADAPTER_INFO query is expected — the dashboard queries state before CONNECT_REQ. Tag 0x01 returns the saved static/last-used IP regardless of current link state. Note: a previous note here attributed this to `g_DHCP_Interface_States` lag — that was incorrect.
+
+**v9.0** — Wire verification pass (lysten_* real adapter logs + xbox_mode21/mode26 emulated logs) and full firmware cross-check against NML_bin.c and DHCP_Client_Start assembly listing
+- **FIXED**: Section 1.3 Order of operation — HMAC is **prepended at offset 0** of Type 0x02 payload, not appended after. Wire-confirmed.
+- **FIXED**: Type 0x08 header — body size corrected from "variable" to fixed **0x04 DWORDs**. Wire-confirmed across all captures.
+- **FIXED**: Table A Tag 0x02 — added missing 0x02 return state and firmware bug note (uninitialised stack byte if InterfaceStatus is neither 0 nor 1).
+- **FIXED**: Table A Tag 0x03 — marked **UNIMPLEMENTED / DO NOT REQUEST**. Falls through to LAB_8009a918 and corrupts response output. Was a doc artefact. *(See v17.0 — reinstated: Xbox dash confirmed to read it via unique handler in switchD_0013d9f2)*
+- **FIXED**: Table A Tag 0x04 — corrected read description to `wlan_is_radio_active()` 0/1 flag. Write path (operating mode) is different semantic.
+- **FIXED**: Table A Tag 0x05 — corrected read description to `WLAN_Get_Status_Arbiter()` (channel or rate index). Write path (rate table index) is different semantic.
+- **FIXED**: Table A Tag 0x08 — corrected from "0x02=infrastructure, 0x04=ad-hoc" to "0x02=link idle/WEP inactive, 0x04=link active/WEP enabled". Wire-confirmed.
+- **FIXED**: Table A Tag 0x11 — replaced wrong security enumeration with correct `wlan_get_encryption_type()` return value table.
+- **FIXED**: Table A Tag 0x82 — corrected from "Interface Config Update" to "Hardware chip revision (low byte of ath_hal_get_hw_info())".
+- **FIXED**: Table A Tag 0x83 — renamed from "Turbo Mode" to "Net Reset Param" (`g_CFG_Net_Reset_Param`). Turbo Mode was a Ghidra label artefact.
+- **FIXED**: Table B Tag 0x00 — added missing `CFG_Save_To_Flash()` call (firmware calls Flash_Commit_Settings + CFG_Save_To_Flash + hw_trigger_reboot_sequence).
+- **FIXED**: Table B Tag 0x82 — corrected to document conditional disconnect behaviour (`NET_Reinit_Interface_With_MAC`).
+- **FIXED**: Table B Tag 0x83 — corrected variable name from `G_XPP_TurboMode` (non-existent) to `g_CFG_Net_Reset_Param`.
+- **FIXED**: Table B Tag 0x85 — corrected "clamped to 0x0B" to "silently dropped" — firmware does not clamp, it simply does not store the value.
+- **FIXED**: Type 0x07 ad-hoc example — removed duplicate Tag 0x11 entry. Second 0x11 was incorrectly labelled "flash commit and save" (that is Tag 0x00).
+- **FIXED**: Tag 0x11 connection workflow section — renamed from "Commit to Flash" to "CFG_Set_XPP_Auth_Mode". Tag 0x00 handles flash save, not 0x11.
+- **FIXED**: Security Types Reference — Byte 40 always 0x02 on wire regardless of network type. Enumeration table removed. Wire-confirmed across all real adapter captures.
+- **FIXED**: Security Status Bitfield (Byte 42) — replaced cipher-type interpretation with wire-verified 802.11 Privacy bit description. Added note that WEP, WPA, WPA2 are not distinguishable from this byte alone.
+- **FIXED**: Network Slot net_mode — added undocumented value 0x09 (observed on some infrastructure APs, distinction from 0x01 unknown).
+- **ADDED**: Interface Descriptor Struct at 0x800ceba0 — documented from DHCP_Client_Start assembly. Stride 0x0C, fields: g_NET_InterfaceStatus, CFG_Target_BSSID (flag, not a BSSID), g_NVRAM_Router_MAC, DHCP_Config_Word.
+- **NOTED**: CFG_Target_BSSID (0x800ceba1) is a 1-byte status flag, not a BSSID — Ghidra name is misleading. Better label: g_Interface_Has_Target.
+- **NOTED**: g_NVRAM_Router_MAC (Ghidra listing) = g_ROUTER_MAC_ADDRESS (NML_bin.c) — same variable, different label in each view.
+- **ADDED**: Flash tags 0x86–0x89 partial read warning — only tags 0x86 and 0x87 are reliable; 0x88 and 0x89 are beyond the 0x400-byte read limit and return 0xFF fill on failure.
+
+
+- **ADDED**: WPA/WPA2 implementation section (Path 1 and Path 2)
+- **ADDED**: Types 0x0B and 0x0C documented as firmware-verified silently-dropped packets (with internal counters DAT_800ce0f8 / DAT_800ce0fc)
+- **ADDED**: Additional TFTP payload and connect information.
+- **FIXED**: Table B — removed duplicate/inconsistent first table; merged into single firmware-verified table with function names
+- **FIXED**: Table B — Tag 0x0E corrected from "Key Index / WEP Key index" to "Radio Channel Index" — firmware calls `CFG_Set_WiFi_Channel()`
+- **FIXED**: Table B — Tag 0x84 description corrected: this is "Rate Capability Config"
+- **FIXED**: Table B — Tag 0x10 size corrected from 32 to 34 bytes (2 bytes length/reserved + 32 bytes PMK); must skip exactly 34 or parser desyncs
+- **FIXED**: Type 0x02 — added wire-verified payload example from log capture
+- **FIXED**: Type 0x0A — removed mislabelled "Byte 2" reserved section header (was labelled as Byte 2, is actually Byte 3)
+- **ADDED**: Type 0x0A — ad-hoc rate cap documented and wire-verified (0x16 = 11 Mbps ceiling in ad-hoc mode, 0x6C in infrastructure)
+- **ADDED**: Type 0x0A — wire-verified payload examples from lysten_adhoc.log
+- **FIXED**: Type 0x0E Discovery Response — body size notation normalised to uppercase (0x0A)
+- **FIXED**: Table A duplicate in section 8 replaced with cross-reference to section 7
+- **FIXED**: Discovery/Discovery Response sections renumbered 15/16 to accommodate new 0x0B/0x0C entries
+- **UPDATED**: Table of Contents to reflect new section numbers
+
+**v7.0**
+- fix signal scaling
+- remove redundant payload sections and move to single packet Structure examples
+
+**v6.0**
+- Edit packet sizes payloads and correct to the wire formatted data.
+- make proper tables and work out TLV Tag packets and payload formats in type 0x05 0x06 and tag_0x07.
+- Add flash and save info.
+- fix body count math to include 12 byte XPP header instead of 12 byte null payload.
+- Add examples payloads for type 0x05 and 0x06.
+- found more tags and added them to the tag tables.
+- removed struct examples and code around parsing frames and paylods.
+- include mac.dat virtual; file System
+- add in flash upgrade procedure.
+
+**v5.0**
+- Complete reorganization: packet-centric linear structure
+- All tags listed directly under relevant packet types
+- Removed redundant cross-references
+- Consolidated scattered information
+
+**v4.0**
+- Firmware reverse engineering integration
+- Complete function mapping
+- HMAC authentication details
+
+**v3.0**
+- Ad-hoc mode protocol confirmed
+- Tag 0x02 = Wi-Fi channel discovery
+- TLV tag complete reference
+
+**v2.2**
+- Network slot format confirmation
+- Security type validation
+
+**v1.0**
+- Initial protocol documentation
+
+---
+### Footer 
+**All reverse engineering was based on firmware version v1.0.2.26 using Ghidra v12**
+**signed off by Jonathan Brophy <Professor_jonny@hotmail.com**
