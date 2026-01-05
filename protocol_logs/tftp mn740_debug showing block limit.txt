@@ -1,0 +1,18 @@
+Primary instruction cache 16kb, linesize 16 bytes.
+Primary data cache 16kb, linesize 16 bytes.
+Created Inet main task.
+Created clock tick task.
+Created console task.
+Created PING application task.
+Created bbn discovery task.
+channel = 11, 2462
+Wireless Mode = 8, Data Rate = best
+ar5212GetMacAddr: EEPROM MAC is all 0's or all F's
+usrEndLibInit: enet not found.
+
+BeaconInit -- t3: x = nextTbtt x +  atim x, tsf: x
+Created tApIdle task.
+Ready
+Created tScanTask task.
+Initializing 802.11g(A) Interface...OK !
+Creat
