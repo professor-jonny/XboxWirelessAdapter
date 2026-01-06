@@ -10,7 +10,7 @@ This package turns your OpenWrt router into an Xbox Wireless Adapter (MN-740) em
 - **Password Length Limitation**: Xbox UI limits password entry to ~13 characters for WEP compatibility. For longer WPA/WPA2 passwords, you may need to pre-configure or modify your network password to meet this limit.
 
 **Dev Info**: There is still a lot of work to do this is just really a proof of concept.
-I'm not really confidant on python or reverse engineering so I may have interpreted some info wrong from Agarmash's original python emulator, and my own research. 
+I'm not really confidant on python or reverse engineering so I may have interpreted some info wrong from Agarmash's original python emulator, and my own research.
 
 ## What This Does
 
@@ -41,7 +41,7 @@ Tested/recommended hardware:
 
 ### 1. Extract Xbox Secrets
 
-**On your computer with Python 3:**
+**xonlinedash method:**
 
 ```bash
 # Get xonlinedash.xbe from your Xbox (usually in C:\xodash\)
@@ -56,6 +56,20 @@ python3 extract_secrets.py xonlinedash.xbe
 # Verify files were created
 ls secrets/
 # Should show: hmac_salt.bin (117 bytes), hmac_key.bin (16 bytes), auth_copyright.bin (84 bytes)
+```
+**mn-740 firmware method:**
+```bash
+# Download the mn740Update.exe tool from off the net.
+# run the installer it will place the below file in the temp directory
+# MN740_01.00.02.0021_RUNTIME.bin
+# Extract the file with win arj or similar extraction tool and it will extract the below file
+# NLM.MEM
+
+# Extract secrets
+python3 extract_secrets.py NML.MEM
+
+# follow the same method as above for verification:
+
 ```
 
 ### 2. Install Package
