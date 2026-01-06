@@ -20,7 +20,7 @@ define Package/xboxwireless
   SECTION:=net
   CATEGORY:=Network
   TITLE:=Xbox Wireless Adapter Protocol Handler
-  DEPENDS:=+libc
+  DEPENDS:=+libc +libopenssl +libopenssl-legacy
   PKGARCH:=all
 endef
 
@@ -41,17 +41,18 @@ endef
 define Build/Compile
 	$(TARGET_CC) $(TARGET_CFLAGS) $(TARGET_LDFLAGS) \
 		-o $(PKG_BUILD_DIR)/xboxwireless \
-		$(PKG_BUILD_DIR)/xboxwireless.c
+		$(PKG_BUILD_DIR)/xboxwireless.c \
+		-lcrypto
 endef
 
 define Package/xboxwireless/install
 	$(INSTALL_DIR) $(1)/usr/sbin
 	$(INSTALL_BIN) $(PKG_BUILD_DIR)/xboxwireless $(1)/usr/sbin/
 	$(INSTALL_BIN) ./files/xboxwireless-config.sh $(1)/usr/sbin/
-	
+
 	$(INSTALL_DIR) $(1)/etc/init.d
 	$(INSTALL_BIN) ./files/xboxwireless.init $(1)/etc/init.d/xboxwireless
-	
+
 	$(INSTALL_DIR) $(1)/etc/config
 	$(INSTALL_CONF) ./files/xboxwireless.config $(1)/etc/config/xboxwireless
 endef
