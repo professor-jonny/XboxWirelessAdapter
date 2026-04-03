@@ -1,4 +1,4 @@
-# Xbox MN-740 Wireless XPP over NLB (Xbox Peripheral Protocol) - Complete Specification v44
+# Xbox MN-740 Wireless XPP over NLB (Xbox Peripheral Protocol) - Complete Specification v48
 
 **Status**: Complete
 
@@ -49,6 +49,7 @@ The Xbox supports PMK formatted hex and ASCII passwords up to 63 characters as p
 - [Troubleshooting Guide](#troubleshooting-guide)
 - [Packet Flow Timing Diagram](#packet-flow-timing-diagram)
 - [MSBNUpdate.exe Firmware Update Tool](#msbnupdateexe-firmware-update-tool)
+- [BBN Device Discovery Protocol](#bbn-device-discovery-protocol)
 
 ---
 
@@ -737,7 +738,7 @@ the end of each slot to make a stride of 61 bytes from the start of one slot to 
 Total size: (14 Ethernet + 12 Header + 1 Count + N×61 Slots + Padding) = N Bytes
 Body size:  (12 header + 1 network count  + (NC * 61) + Padding) / 4 = N DWORDs
 
-Size | Segment            | Description
+Size         | Segment            | Description
 -------------|--------------------|--------------------------------
 14 bytes     | Ethernet header    | Standard header
 12 bytes     | XPP Header         | Type 0x04, body size = variable DWORDs
@@ -1002,7 +1003,7 @@ In this response example does not have an IP address at the time of the tag requ
 ------|-----------------------|-------|-----------------|-------------
 0x01  | IP Address            |  4    |   IP assigned   | Current adapter IP (Big-Endian)
 0x02  | Connection State      |  1    |   Always        | 0x00=no DHCP yet, 0x01=DHCP acquired (state 0x52), 0x02=interface manually enabled. See Tag 0x02 detail below.
-0x03  | Admin Identity        |  Var  |   Always        | Read-back of G_XPP_Admin_Identity (max 17 bytes) Adapter write counterpart is Table B Tag 0x03.
+0x03  | Admin Identity        |  Var  |   Always        | Read-back of `g_NVRAM_User_Settings.Legacy_Padding` (`admin_id`) — the XPP admin identity password (max 16 bytes + NUL). Write counterpart is Table B Tag 0x03. This same string is used as HMAC input for TFTP RRQ auth on port 16932.
 0x04  | Radio Active Flag     |  1    |   Always        | wlan_is_radio_active(): 0x00=radio off, 0x01=radio on/b-only, 0x02=radio on/b+g.
                                                         | 0x01 means radio active in 802.11b mode, not merely "on". (Write path via Tag 0x04 in Type | 0x07 sets operatingmode
 0x05  | radio channel         |  1    |   Always        | XPP_Get_Channel_Or_Fallback(): returns live radio channel (1–14) via wlan_freq_to_channel_number() when authenticated, or
@@ -1321,7 +1322,7 @@ All TLV tags use: `[1 byte Tag] [1 byte Length] [N bytes Value]`
      |                         |      | + hw_trigger_reboot_sequence()        |
 0x01 | IP Address              | 4    | memcpy → CFG_Device_IP                | Static IP address configuration (big-endian)
 0x02 | Connection State        | 1    | g_NET_InterfaceStatus = (*src == 2)   | 0x02=enable (true), any other value=disable (false)
-0x03 | XPP Admin Password /    | 0-16 | memcpy → G_XPP_Admin_Identity         | Console pairing lock: prevents unauthorised consoles from reconfiguring
+0x03 | XPP Admin Password /    | 0-16 | memcpy → g_NVRAM_User_Settings.Legacy_Padding (admin_id) | Console pairing lock: prevents unauthorised consoles from reconfiguring
      | Pairing Lock            |      |                                       | the adapter. Factory default "admin". Also serves as HTTP/TFTP admin
      |                         |      |                                       | username. Len=0 clears the password. Wire-verified in lysten_password.log.
 0x04 | Operating Mode          | 1    | WLAN_Set_Operating_Mode()             | Wireless operating mode configuration.
@@ -1601,11 +1602,12 @@ configuration changes by an unauthorised console. When set, only a console that 
 correct password via Tag 0x03 can issue `CONNECT_REQ` commands that modify the adapter's
 settings. This prevents another Xbox from hijacking a paired adapter.
 
-Firmware stores the value in `G_XPP_Admin_Identity` (max 17 bytes including null terminator).
-Factory default is `"admin"` (set by `Flash_Commit_Settings()`). This same credential is also
-used as the HTTP/TFTP admin username for the adapter's built-in web configuration page.
+**Firmware storage**: `g_NVRAM_User_Settings.Legacy_Padding` (`admin_id`) (max 16 bytes + NUL = 17 bytes total). Copied into `XPP_Identity_t.admin_id` at boot for CLI session authentication.
+Factory default is `"admin"` (set by `Flash_Commit_Settings()` via `STR_DEFAULT_CREDENTIAL`).
 
-**Setting the password**: Send Tag 0x03 with the new password string (3-16 printable ASCII).
+**What Tag 0x03 changes**: the `Legacy_Padding` (`admin_id`) field only — this is the HTTP Basic Auth **password** and the TFTP RRQ HMAC input. The HTTP Basic Auth **username** (`xpp_identity_username`) is a separate field that Tag 0x03 does not touch and has no XPP write path.
+
+**Setting the password**: Send Tag 0x03 with the new password string (3-16 printable ASCII).\
 **Clearing the password**: Send Tag 0x03 with length = 0x00 (empty value).
 
 **Wire-verified** (`lysten_password.log`):
@@ -1911,9 +1913,9 @@ The adapter listens for TFTP on **two separate UDP ports**, both registered at b
 They serve different purposes and have different auth behaviours.
 
 ```
-Port      | Hex    | Registered by               | Path name   | Auth handler
-----------|--------|-----------------------------|-------------|-----------------------------
-69        | 0x0045 | xpp_sync_radio_state()      | Unpaired    | g_XPP_Active_Frequency
+Port      | Hex    | Registered by              | Path name   | Auth handler
+----------|--------|----------------------------|-------------|-----------------------------
+69        | 0x0045 | xpp_sync_radio_state()     | Unpaired    | g_XPP_Active_Frequency
 16932     | 0x4224 | xpp_sync_connection_status()| Paired      | XPP_Secure_Config_Update
 ```
 
@@ -1924,8 +1926,8 @@ The dispatcher uses sentinel values to distinguish which port received the packe
 **Session handle gate**: Both ports check `g_XPP_Session_Handle == -1` before
 allowing any transfer. If the handle is not set (i.e. no XPP handshake has occurred),
 the adapter responds with `"Transfers currently disabled"` on either port. The
-`g_XPP_Session_Handle` is set to `-1` by `xpp_session_invalidate()` during the XPP
-handshake flow, and cleared to `0` by `xpp_session_init_clear()`. **A prior XPP
+`g_XPP_Session_Handle` is set to `0xffffffff` (-1) by `TFTP_Session_Enable()` during the XPP
+handshake flow, and cleared to `0` by `TFTP_Session_Disable()`. **A prior XPP
 handshake is therefore required before TFTP transfers are accepted on either port.**
 
 **Data transfer port**: After auth passes, the session's port field is zeroed and
@@ -1965,7 +1967,7 @@ handshake sets `g_XPP_Session_Handle = -1`.**
 - **Transfer modes accepted**: `"image"`, `"octet"` (binary), `"netascii"` (text)
 - **Auth header**: Non-standard 58-byte prefix before the TFTP payload (see below)
 - **WRQ auth**: None — the firmware upload path performs no credential check on either port
-- **RRQ auth**: MAC check + HMAC-SHA1 (port 16932 paired path only)
+- **RRQ auth**: MAC check + HMAC-SHA1 (port 16932 paired path only). MAC checked against `g_NET_Interface_MAC_Table` (adapter hardware MAC when unpaired, Xbox console MAC when paired).
 - **Concurrent sessions**: Only one TFTP session is permitted at a time (`g_TFTP_Session_Active_Flag` ref-count). A second request while a session is active is logged and rejected.
 - **XPP session prerequisite**: `g_XPP_Session_Handle` must be `-1` (set by successful XPP handshake) or any request on either port gets `"Transfers currently disabled"`.
 - **Data transfer port**: After auth passes, the adapter opens a new ephemeral UDP port for the actual DATA/ACK exchange. Ephemeral ports start at 1200 (0x4b0), allocated by `UDP_Allocate_Dynamic_Port()` seeded from uptime ticks. The client must send subsequent packets to this ephemeral port, not to 69 or 16932.
@@ -1979,15 +1981,20 @@ Use case                    | Port  | Notes
 ----------------------------|-------|------------------------------------------
 Firmware flash (WRQ)        | 69    | Standard path, no auth, any client
 Firmware flash (WRQ)        | 16932 | Also works — WRQ has no auth on either port
-Read config files (RRQ)     | 16932 | Requires paired MAC + HMAC auth
-Read debug log (RRQ)        | 16932 | Requires paired MAC + HMAC auth
+Read config files (RRQ)     | 16932 | Requires MAC + HMAC auth (adapter MAC if unpaired, Xbox MAC if paired)
+Read debug log (RRQ)        | 16932 | Requires MAC + HMAC auth (adapter MAC if unpaired, Xbox MAC if paired)
 Virtual file writes (WRQ)   | 16932 | No auth on WRQ, but payload has embedded tokens
 ```
 
-### XPP TFTP Payload Format
-**Wire-verified** from live capture (`tftpx.pcap`) + firmware decompile (`XPP_Secure_Config_Update`).
+---
 
-The entire UDP payload is structured as a 58-byte auth header immediately followed by the standard RFC 1350 TFTP packet. There is no gap or alignment between them.
+### ⚠️ CORRECTED: XPP TFTP Auth Header — Exact Wire Format
+
+**Wire-verified** from live captures (`tftpx.pcap`, `trialupdate.pcapng`) + firmware decompile of `XPP_Secure_Config_Update`.
+
+⚠️ **FURTHER CORRECTION from `trialupdate.pcapng`**: The description below (originally from `tftpx.pcap`) presents the auth material as a header prepended before the TFTP opcode. The `trialupdate.pcapng` capture shows that MSBNUpdate.exe instead **embeds the 58 auth bytes inside the TFTP filename field**: the packet begins with opcode `0x0002` (WRQ), then the 58 auth bytes follow as binary filename data, then a null terminator, then `"octet"` mode. The firmware reads auth bytes at fixed UDP payload offsets (`+0x00` for MAC, `+0x26` for HMAC) which happen to land inside the filename field due to the 2-byte opcode prefix. **See the "Wire-Verified Correction: WRQ Auth Material Embedded in Filename Field" subsection in the MSBNUpdate section for the full corrected wire format.** The layout described below applies to RRQ packets from `tftpx.pcap` and may reflect a different tool or firmware revision.
+
+The entire UDP payload for TFTP on **port 16932** is structured as a **58-byte auth header** immediately followed by the standard RFC 1350 TFTP packet. There is no gap or alignment between them.
 
 ```
 Offset | Size     | Description
@@ -1999,12 +2006,12 @@ Offset | Size     | Description
 ```
 Total auth header: **58 bytes (0x3a)** — wire-confirmed ✅
 
-Wire-verified packet example (RRQ for `"image"` in `"octet"` mode):
+**Wire-verified packet example (RRQ for `"image"` in `"octet"` mode):**
 ```
 Offset | Hex                                               | Field
 -------|---------------------------------------------------|-------
-+0x00  | 94 de 80 b9 b1 2c                                 | src_mac
-+0x06  | 00 00 00 00 ... (32 zero bytes)                   | padding
++0x00  | 94 de 80 b9 b1 2c                                 | src_mac (6 bytes)
++0x06  | 00 00 00 00 ... (32 zero bytes)                   | padding (zeros)
 +0x26  | 82 2f 85 b7 ca 0c f6 fa ad 5f                     | HMAC-SHA1
        | 3c 26 04 30 62 6d 1b 08 3e c8                     | (20 bytes total)
 +0x3a  | 00 01                                             | TFTP opcode: RRQ (1)
@@ -2012,15 +2019,129 @@ Offset | Hex                                               | Field
 +0x42  | 6f 63 74 65 74 00                                 | mode: "octet\0"
 ```
 
-### Standard TFTP Packet (at +0x3a)
+---
+
+### ⚠️ CORRECTED: Auth Logic — Port 16932 RRQ MAC Check
+
+**Firmware function**: `XPP_Secure_Config_Update()` — decompiled from `NML_bin.c`.
+
+The firmware source code contains a **critical difference** from earlier versions of this spec:
+
+```c
+void XPP_Secure_Config_Update(undefined4 param_1, char *param_2, uint tftp_op_mode)
+{
+    // param_2 = raw UDP payload pointer (the 58-byte auth header start)
+
+    if ((tftp_op_mode & 0xffff) == 2) {
+        // WRQ — log "tftpd_put" and return immediately (NO checks)
+        wlan_log_debug_info(4, s_tftp_update, s_tftpd_put);
+    }
+    else if ((tftp_op_mode & 0xffff) == 1) {
+        // RRQ — perform two auth checks:
+        wlan_log_debug_info(4, s_tftp_update, s_tftpd_get);
+
+        // CHECK 1: MAC match
+        iVar1 = wlan_mac_addr_equal(param_2, &g_NET_Interface_MAC_Table, 6);
+        if (iVar1 == 0) {
+            // MAC matched — proceed to HMAC check
+
+            // CHECK 2: HMAC verification
+            strcpy(&DAT_800cdb6c, g_NVRAM_User_Settings.Legacy_Padding);  // admin_id (XPP admin identity password)
+            sVar2 = strlen(g_NVRAM_User_Settings.Legacy_Padding);
+            xpp_calculate_hmac_sha1((SHA_CTX *)&DAT_800cdb6c, sVar2, -0x7ff32014, 0x14);
+            iVar1 = wlan_mac_addr_equal(param_2 + 0x26, &DAT_800cdfec, 0x14);
+            if (iVar1 == 0) {
+                // Both checks passed — allow RRQ
+                wlan_log_debug_info(4, s_tftp_update, s_filename_ok);
+            }
+            else {
+                wlan_log_debug_info(4, s_tftp_update, s_password_error1);  // HMAC mismatch
+            }
+        }
+        else {
+            wlan_log_debug_info(4, s_tftp_update, s_mac_error);  // MAC mismatch
+        }
+    }
+}
 ```
-[2 bytes opcode][filename\0][mode\0][data...]
+
+**Key correction — the MAC being checked is `g_NET_Interface_MAC_Table`, which is dual-use.**
+
+`g_NET_Interface_MAC_Table` is the same global written in two different places depending on adapter state:
+
+- **At boot / unpaired**: populated from the adapter hardware MAC by `eth_brecis_msp_init()`. This is what appears in the BBN discovery response at `+0x60`.
+- **After pairing**: overwritten with the paired Xbox console MAC by `CFG_Set_Paired_Xbox_MAC()`.
+
+The previous version of this spec incorrectly stated `g_NVRAM_Router_MAC` was used, and also incorrectly stated the field always contains the Xbox console MAC. On an **unpaired** adapter (the MSBNUpdate firmware-update scenario), this field contains the **adapter hardware MAC**, not a console MAC.
+
+Full corrected auth rules for port 16932:
+
 ```
+Check       | What is compared                                         | Failure result
+------------|----------------------------------------------------------|---------------------
+MAC check   | param_2[0..5] vs g_NET_Interface_MAC_Table:
+            |   UNPAIRED adapter → adapter hardware MAC                | log "mac_error", refuse
+            |   PAIRED adapter   → paired Xbox console MAC             |
+HMAC check  | param_2[0x26..0x39] vs HMAC-SHA1(key=g_XPP_HMAC_Key,
+            |   input=g_NVRAM_User_Settings.Legacy_Padding (admin_id)) | log "password_error1", refuse
+```
+
+**Implications for emulator TFTP RRQ:**
+1. The source MAC in the auth header (`param_2[0..5]`) must match the current value of `g_NET_Interface_MAC_Table`: the **adapter hardware MAC** on an unpaired adapter, or the **Xbox console MAC** on a paired adapter. MSBNUpdate always sends the adapter hardware MAC — correct for its unpaired firmware-update use case.
+2. For an **unpaired** adapter at factory reset, `g_NET_Interface_MAC_Table` holds the **adapter hardware MAC** (populated at boot by `eth_brecis_msp_init()`), not all-zeros as previously stated.
+3. The HMAC at offset `+0x26` is computed as: `HMAC-SHA1(key=g_XPP_HMAC_Key (16 bytes), input=admin_id_string)`.
+4. For default config, `admin_id = "admin"` and the key is the static ROM value `cb275ff238ab61dc8799fa01ad17745e`. Both are fixed constants — the correct HMAC is fully offline-computable.
+
+**WRQ has no access control on either port.** `XPP_Secure_Config_Update` logs `"tftpd_put"` and returns immediately without any check. Any host that has established an XPP session can flash new firmware via WRQ on port 69 or 16932.
+
+---
+
+### ⚠️ CORRECTED: WRQ Initial ACK — Block 0 Sent Before DATA
+
+**From `TFTP_Process_New_Request()` decompile:**
+
+For a WRQ (write request), the adapter sends **ACK block 0 immediately** upon accepting the request — before receiving any DATA:
+
+```c
+// WRQ path (opcode == 2):
+*(undefined2 *)&p_tftp_session_desc->field_0x2c = 0;       // block number = 0
+net_tftp_send_acknowledgment(p_tftp_session_desc, ...);     // send ACK 0
+*(undefined2 *)&p_tftp_session_desc->field_0x2c = 1;       // next expected = 1
+*(undefined4 *)&p_tftp_session_desc->field_0x38 = 1;       // state = RECV
+```
+
+This is standard RFC 1350 WRQ behaviour — the server sends ACK 0 to signal readiness, client then sends DATA block 1. Your emulator **must** send ACK block 0 in response to WRQ before the client will begin sending data. Failure to send ACK 0 causes the client to time out waiting.
+
+**For RRQ (read request):**
+
+The block number starts at 1 — the adapter opens the file and begins sending DATA block 1 immediately:
+
+```c
+// RRQ path (opcode == 1):
+*(undefined4 *)&p_tftp_session_desc->field_0x38 = 6;       // state = SEND
+*(undefined2 *)&p_tftp_session_desc->field_0x2c = 1;       // next block = 1
+*(undefined4 *)&p_tftp_session_desc->field_0x28 = 0x200;   // block size = 512
+```
+
+No ACK 0 is sent for RRQ — the adapter sends DATA 1 directly.
+
+---
+
+
+### Standard TFTP Packet (at +0x3a on port 16932, at +0x00 on port 69)
+```
+WRQ/RRQ:  [opcode:2][filename\0][mode\0]
+DATA:      [opcode:2][block:2][data:≤512]
+ACK:       [opcode:2][block:2]
+ERROR:     [opcode:2][error_code:2][message\0]
+```
+Opcodes: 1=RRQ, 2=WRQ, 3=DATA, 4=ACK, 5=ERROR
 
 ### WRQ Filename
 The standard firmware upgrade filename is `"image"`. MSBNUpdate.exe uses `"boot.bin"` as its WRQ filename. Both are accepted by the firmware — the completion callback (`xpp_tftp_commit_config`) does not validate the filename at all; it flashes whatever data was received into `g_HTTP_UPLOAD_BUFFER` regardless of what the file was named. Any filename triggers the same flash-and-reboot path.
 
-### Auth Logic — Port 69 vs Port 16932
+### Auth Logic — Port 69 vs Port 16932 (Corrected)
+
 Firmware function: `TFTP_Process_New_Request()`, branching on `param_4` (0=port 69, 1=port 16932).
 
 Both ports first check `g_XPP_Session_Handle == -1`. If not set, transfer is refused on both.
@@ -2036,31 +2157,133 @@ Both ports first check `g_XPP_Session_Handle == -1`. If not set, transfer is ref
 - Auth handler: `g_XPP_Link_State` = `XPP_Secure_Config_Update()`
 - WRQ: `XPP_Secure_Config_Update` logs `"tftpd_put"` and **returns immediately — no checks**.
 - RRQ: performs two checks in sequence:
-  1. `wlan_mac_addr_equal(packet+0x00, g_NVRAM_Router_MAC, 6)` — source MAC must match the paired router MAC. Mismatch = `"mac_error"`, transfer refused.
-  2. HMAC-SHA1 of `G_XPP_Admin_Identity` (default `"admin"`) using `g_XPP_HMAC_Key`, compared against 20 bytes at `packet+0x26`. Mismatch = `"password_error"`, transfer refused.
+  1. `wlan_mac_addr_equal(param_2+0x00, &g_NET_Interface_MAC_Table, 6)` — source MAC must match `g_NET_Interface_MAC_Table`. This is the **adapter hardware MAC** on an unpaired adapter, or the **paired Xbox console MAC** on a paired adapter. Mismatch = `"mac_error"`, transfer refused. ⚠️ **NOTE: This is `g_NET_Interface_MAC_Table`, NOT `g_NVRAM_Router_MAC`.**
+  2. HMAC-SHA1 of `g_NVRAM_User_Settings.Legacy_Padding` (`admin_id`, the XPP admin identity password, default `"admin"`) using `g_XPP_HMAC_Key`, compared against 20 bytes at `param_2+0x26`. Mismatch = `"password_error1"`, transfer refused.
 - Return values from auth handler: `0` = allowed, `-1` = Access violation (ERROR code 2), `-2` = silent drop
 - Completion callback: `g_XPP_Security_State`
 
 **Both ports — WRQ has no access control.** Any host with a valid XPP session can flash
-new firmware on either port. Port 69 is the simpler path with no MAC or HMAC check at all.
+new firmware on either port. Port 69 WRQ has no auth handler at all. Port 16932 WRQ calls
+`XPP_Secure_Config_Update` which immediately returns after logging `"tftpd_put"` without
+checking anything.
 
 **Note on dispatch paths**: The firmware also checks `if (param_4 == 0) OR (g_XPP_Link_State == NULL)` — if port 16932 is used but `g_XPP_Link_State` was never registered, it falls through to the port 69 auth path as a fallback.
 
+---
+
 ### TFTP Credentials
-- **Default username**: `"admin"` (stored in `G_XPP_Admin_Identity`)
-- **Default password**: `"admin"` (stored in `G_XPP_Identity_Password`) — not used
-  by the TFTP HMAC check, which signs the *username* string only
-- Both reset to `"admin"` on factory reset
-- Username can be changed via Table B Tag 0x03 in a Type 0x07 packet
+The adapter has two separate credentials stored in NVRAM, both defaulting to `"admin"` at factory reset:
+
+**HTTP username / XPP device identity**: `xpp_identity_username` (default `"admin"`).
+Populated into `XPP_Identity_t.password` at boot. Used as the HTTP Basic Auth username.
+**No XPP TLV tag writes this field** — it can only be changed via the HTTP web config page.
+
+**HTTP password / TFTP HMAC input / CLI admin_id**: `g_NVRAM_User_Settings.Legacy_Padding` — the XPP admin identity password (max 16 chars + NUL = 17 bytes total).
+This is the credential used by `XPP_Secure_Config_Update` as the HMAC input for TFTP RRQ authentication on port 16932. It is also used as the HTTP Basic Auth password and copied to `XPP_Identity_t.admin_id` at boot for CLI session auth.
+**Written by Tag 0x03 in Type 0x07 CONNECT_REQ.** Also changeable via HTTP web UI.
+
+⚠ **Naming note**: this field is called `Legacy_Padding` by Ghidra (the decompiler artifact name). In the firmware's runtime struct `XPP_Identity_t` it is `admin_id`. There is no field called `wifi_key` anywhere in the firmware — that name was an error in earlier versions of this spec.
+
+Both default to `"admin"` at factory reset giving HTTP credentials of `admin:admin`.
+Tag 0x03 changes only the password/HMAC side (`Legacy_Padding` / `admin_id`), not the username side (`xpp_identity_username`).
+Factory reset restores both via `Flash_Commit_Settings()` → `strcpy(STR_DEFAULT_CREDENTIAL)`.
+
+---
+
+### TFTP — Emulator Implementation Checklist
+
+This section documents the most likely causes of TFTP failure in an emulator, ordered by probability:
+
+```
+Priority | Issue                                                   | Fix
+---------|---------------------------------------------------------|---------------------------------------------
+1 (HIGH) | Not sending ACK block 0 after WRQ is accepted           | Send ACK opcode 4, block number 0, immediately
+         |                                                         | on WRQ receipt — before client sends DATA 1
+2 (HIGH) | Sending DATA to wrong port after session starts         | Client must re-address packets to the EPHEMERAL
+         |                                                         | port the adapter allocated, not port 69/16932
+3 (HIGH) | XPP session handle not set before TFTP                  | Must complete a full Type 0x01/0x02 handshake
+         |                                                         | before TFTP port accepts any request
+4 (MED)  | RRQ MAC check failing — using wrong MAC                 | Auth header src_mac[0..5] must equal
+         |                                                         | g_NET_Interface_MAC_Table: adapter hardware
+         |                                                         | MAC if unpaired, Xbox console MAC if paired.
+         |                                                         | MSBNUpdate uses adapter MAC — get it from
+         |                                                         | the BBN discovery response at offset +0x60.
+5 (MED)  | HMAC at wrong offset in auth header                     | HMAC is at payload offset +0x26 (38 decimal),
+         |                                                         | not at +0x06. Offsets 0x06–0x25 are zero padding.
+6 (LOW)  | APIPA routing — no route back to 169.254.x.x adapter    | Add a host IP in the 169.254.0.0/16 range on the
+         |                                                         | NIC connected to the adapter before attempting TFTP
+7 (LOW)  | Final zero-length DATA packet not handled               | Adapter may not ACK final zero-length block;
+         |                                                         | handle ACK timeout on final block gracefully
+```
+
+**Step-by-step WRQ flow (emulator must implement exactly):**
+
+```
+Client → Adapter  UDP dst=69   [WRQ opcode=2] [filename\0] [mode\0]
+Adapter → Client  UDP dst=client-src-port (ephemeral port) [ACK opcode=4] [block=0]
+Client → Adapter  UDP dst=ephemeral-port  [DATA opcode=3] [block=1] [512 bytes payload]
+Adapter → Client  UDP dst=client-src-port [ACK opcode=4] [block=1]
+...
+Client → Adapter  UDP dst=ephemeral-port  [DATA opcode=3] [block=N] [<512 bytes — final block]
+Adapter → Client  UDP dst=client-src-port [ACK opcode=4] [block=N]
+   (adapter calls xpp_tftp_commit_config → xpp_flash_write_manager → reboot if size == 0x100000)
+```
+
+**Step-by-step RRQ flow (port 16932 with auth):**
+
+```
+Client → Adapter  UDP dst=16932  [src_mac:6][zeros:32][HMAC-SHA1:20][RRQ opcode=1][filename\0][mode\0]
+   (adapter checks src_mac vs g_NET_Interface_MAC_Table — adapter hardware MAC if unpaired, Xbox MAC if paired)
+Adapter → Client  UDP dst=client-src-port (ephemeral port) [DATA opcode=3] [block=1] [512 bytes]
+Client → Adapter  UDP dst=ephemeral-port  [ACK opcode=4] [block=1]
+...
+Adapter → Client  UDP dst=client-src-port [DATA opcode=3] [block=N] [<512 bytes — final block]
+Client → Adapter  UDP dst=ephemeral-port  [ACK opcode=4] [block=N]
+```
+
+---
 
 ### Security Notes
 **WRQ has no access control on either port.** Any host that has established an XPP session can flash new firmware. Port 69 WRQ has no auth handler at all. Port 16932 WRQ calls `XPP_Secure_Config_Update` which immediately returns after logging `"tftpd_put"` without checking anything.
 
-**RRQ auth is a fixed credential (port 16932 only).** The HMAC at `+0x26` is `HMAC-SHA1(key=g_XPP_HMAC_Key, input=AdminID_string)`. For default config, `AdminID = "admin"` and the key is the static ROM value. Both are fixed constants — the correct HMAC is fully offline-computable once the key is extracted.
+**RRQ auth is a fixed credential (port 16932 only).** The HMAC at `+0x26` is `HMAC-SHA1(key=g_XPP_HMAC_Key, input=admin_id_string)`. For default config, `admin_id = "admin"` and the key is the static ROM value. Both are fixed constants — the correct HMAC is fully offline-computable once the key is extracted.
 
 **Unpaired vs paired adapter behaviour (port 16932 RRQ only):**
-- Unpaired adapter: `g_NVRAM_Router_MAC` is all-zeros. `wlan_mac_addr_equal` against all-zeros passes for any source — only the HMAC check applies.
-- Paired adapter: source MAC must exactly match the stored paired MAC before HMAC is even attempted.
+- Unpaired adapter: `g_NET_Interface_MAC_Table` holds the **adapter hardware MAC** (populated at boot, not all-zeros). The RRQ src_mac must match this adapter hardware MAC. MSBNUpdate obtains this MAC from the BBN discovery response at `+0x60` before attempting TFTP.
+- Paired adapter: source MAC in the auth header must exactly match the stored paired Xbox console MAC (`g_NET_Interface_MAC_Table`) before HMAC is even attempted.
+
+---
+
+### Network Requirements for TFTP (APIPA Adapters)
+
+When the MN-740 is connected directly to a PC with no router or switch, it
+self-assigns an APIPA address (`169.254.x.x/16`) because no DHCP server is
+present. TFTP is standard UDP and requires the **client PC to have an address
+on the same `/16` subnet**; without one the UDP reply from the adapter has no
+route back and every RRQ times out with `WSA 10060`.
+
+**Confirmed from live testing with adapter at `169.254.250.49`:**
+
+The adapter IP is learned from `HANDSHAKE_RESP` offset 210 (the `ip_address`
+field). If that field is zero the adapter hasn't obtained an address yet; wait
+for APIPA self-assignment (~15–30 s after power-on) and re-run the handshake.
+
+**To add a temporary host address on Windows (run as Administrator):**
+```
+netsh interface ip add address "Ethernet" 169.254.1.1 255.255.0.0
+```
+Replace `"Ethernet"` with the actual NIC name from `ipconfig /all`.
+Remove after TFTP completes:
+```
+netsh interface ip delete address "Ethernet" 169.254.1.1
+```
+
+**Route add does NOT work for 169.254.x.x.** The Windows IP stack enforces
+that APIPA destinations are only reachable via an interface that already has an
+address in the `169.254.0.0/16` range. A `route add` command without a local
+address on that range is silently ignored by the routing table.
+
+---
 
 ### Virtual File System — Complete File Catalogue
 The firmware implements a virtual filesystem rooted in `g_HTTP_UPLOAD_BUFFER` (1 MB RAM).
@@ -2096,7 +2319,7 @@ Filename          | Payload size | Effect on success
                   |              | NET_Reload_Config() — restores factory config
 "mac.dat"         | any          | xpp_finalize_console_pairing() → reboot.
                   |              | Writes Xbox pairing MAC. On unpaired adapter, MAC
-                  |              | check trivially passes (stored MAC is all-zeros).
+                  |              | check trivially passes (adapter MAC matches itself).
 "ar5maci.dat"     | any          | AR5212 MAC address import via config_helper().
                   |              | Payload embeds a 4-byte auth token checked against
                   |              | MAC_DAT_DESCRIPTOR_BLOCK.magic_header[0..3].
@@ -2110,35 +2333,6 @@ Filename          | Payload size | Effect on success
 ```
 
 ⚠ The virtual file write tokens (embedded credentials) are derived from `MAC_DAT_DESCRIPTOR_BLOCK.metadata[]` and related ROM constants. Their exact values are hardware-specific and not documented here — they are not related to the TFTP auth header HMAC. These files are PC wizard / factory tool targets and are never requested by `xonlinedash.xbe`.
-
-### Network Requirements for TFTP (APIPA Adapters)
-
-When the MN-740 is connected directly to a PC with no router or switch, it
-self-assigns an APIPA address (`169.254.x.x/16`) because no DHCP server is
-present. TFTP is standard UDP and requires the **client PC to have an address
-on the same `/16` subnet**; without one the UDP reply from the adapter has no
-route back and every RRQ times out with `WSA 10060`.
-
-**Confirmed from live testing with adapter at `169.254.250.49`:**
-
-The adapter IP is learned from `HANDSHAKE_RESP` offset 210 (the `ip_address`
-field). If that field is zero the adapter hasn't obtained an address yet; wait
-for APIPA self-assignment (~15–30 s after power-on) and re-run the handshake.
-
-**To add a temporary host address on Windows (run as Administrator):**
-```
-netsh interface ip add address "Ethernet" 169.254.1.1 255.255.0.0
-```
-Replace `"Ethernet"` with the actual NIC name from `ipconfig /all`.
-Remove after TFTP completes:
-```
-netsh interface ip delete address "Ethernet" 169.254.1.1
-```
-
-**Route add does NOT work for 169.254.x.x.** The Windows IP stack enforces
-that APIPA destinations are only reachable via an interface that already has an
-address in the `169.254.0.0/16` range. A `route add` command without a local
-address on that range is silently ignored by the routing table.
 
 ### Related Information
 - [Type 0x07 Request](#9-type-0x07---connect_to_ssid_request)
@@ -2244,8 +2438,251 @@ final block gracefully.
 `"MN740 Connect, bad password"` appears in the TFTP code area, not the XPP
 discovery code. The password is validated before the TFTP session opens.
 Internally this is done via the XPP channel (CONNECT_REQ Tag 0x03) — the
-same admin identity mechanism described in the TFTP credentials section above.
+same `g_NVRAM_User_Settings.Legacy_Padding` (`admin_id`) credential described in the TFTP credentials section above.
 If the password is wrong the TFTP session is never attempted.
+
+---
+
+### BBN Device Discovery Protocol
+**Sources**: `trialupdate.pcapng` (wire), `NML_bin.c` + `BBN_Handle_Discovery_Task` assembler (firmware-verified)
+
+Before any TFTP transfer begins, MSBNUpdate.exe runs a proprietary device-discovery exchange using the firmware's **BBN** (Broadband Networking) subsystem. This is entirely separate from the XPP (EtherType `0x886f`) management protocol — it operates over standard UDP/IP on port **42424** (`0xa5b8`) and is used by the PC wizard to locate adapters on the local subnet, retrieve their IP and version information, and obtain a session nonce before opening TFTP.
+
+**Session participants (wire-verified):**
+```
+PC (MSBNUpdate.exe): 169.254.250.55, MAC 00:15:5d:01:0a:1b
+Adapter (MN-740):    169.254.38.9,   MAC 00:0d:3a:1f:26:09
+```
+
+#### Transport
+
+The firmware opens **two separate UDP sockets** at boot via `BBN_Init_Sockets()`:
+
+- **RX socket** (`g_BBN_Socket_RX`): bound to port **42424** — receives incoming queries
+- **TX socket** (`g_BBN_Socket_TX`): unbound ephemeral port — sends responses to broadcast `255.255.255.255:42424`
+
+Responses are broadcast (not unicast) so multiple PC listeners on the subnet can receive them simultaneously. The adapter's fixed response source port observed on the wire is **1204**.
+
+The BBN task runs in `WLAN_Discovery_Manager_Task`, which polls `BBN_Handle_Discovery_Task` in a 1ms sleep loop as long as `g_NET_MASTER_STATE` is non-zero (network stack running).
+
+#### Discovery Query Packet (PC → broadcast:42424)
+
+**Firmware-verified**: `BBN_Handle_Discovery_Task` at `8009b854` checks that the received byte count equals exactly `0x14` (20 bytes), then at `8009b884–8009b8e0` validates that bytes `[0..3]` of the incoming buffer equal `50 00 00 00`. Any other size or first byte causes the packet to be rejected with `"bbn: not a discovery request"`.
+
+```
+Offset | Size | Value             | Description
+-------|------|-------------------|----------------------------------------------------
+0      | 1    | 0x50              | Query type marker — REQUIRED, firmware validates this
+1      | 3    | 0x00 0x00 0x00    | Padding zeros (part of the 4-byte match)
+4      | 4    | variable          | Flags/version field — firmware does not validate
+8      | 8    | zeros             | Reserved — firmware does not read these bytes
+16     | 4    | random            | Session nonce — echoed verbatim at response offset +0x66
+Total  | 20   |
+```
+
+Wire examples (both observed in the same session — only the 20-byte form passes the firmware length check):
+```
+20-byte form: 50 00 00 00 01 00 00 00 00 00 00 00 00 00 00 00 59 3f 80 3e  ← ACCEPTED
+17-byte form: 50 00 00 00 01 00 00 00 00 00 00 00 00 59 3f 80 3e           ← REJECTED (wrong length)
+```
+
+#### Discovery Response Packet (Adapter → broadcast:42424, 126 bytes)
+
+**Firmware-verified**: complete field layout derived from `BBN_Handle_Discovery_Task` assembler (`8009b918–8009bbe0`). The buffer is zero-filled with `memset(0, 0x7e)` then each field is written by an explicit `memcpy` or `sh` instruction. Fields marked *(zero-filled gap)* have **no firmware write** — they remain `0x00` from the memset.
+
+The "trailing capabilities TLV block" previously described as having unknown field definitions is now fully decoded: it is the byte-swapped firmware and hardware version fields written as individual halfwords.
+
+```
+Offset  | Size | Firmware source                     | Wire value            | Description
+--------|------|-------------------------------------|-----------------------|---------------------------------------------
++0x00   |  4   | 0x51 byte-reversed → 0x51000000     | 51 00 00 00           | Response type marker
++0x04   |  4   | G_BBN_PROTO_VERSION                 | 00 00 00 01           | Protocol version = 1 (big-endian)
++0x08   |  4   | nvram_check_default_state() result  | 01 00 00 00           | 0x01000000 = factory defaults active, 0x00000000 = customised
++0x0c   | 32   | str_BBN_Device_Name                 | "MN-740 Bridge\0..."  | Long device name, null-padded to 32 bytes
++0x2c   | 32   | str_BBN_Model_Info                  | "MN-740\0..."         | Short model name, null-padded to 32 bytes
++0x4c   |  4   | CFG_Device_IP                       | a9 fe 26 09           | Device IP address (big-endian). 0.0.0.0 if unassigned.
++0x50   |  4   | (zero-filled gap — no firmware write)| 00 00 00 00          | Unused. Always 0x00000000.
++0x54   |  4   | G_NET_ActiveSubnetMask              | ff ff 00 00           | Subnet mask. 0xffff0000 (255.255.0.0) on APIPA /16.
++0x58   |  4   | (zero-filled gap — no firmware write)| 00 00 00 00          | Unused. Always 0x00000000.
++0x5c   |  4   | G_NET_PrimaryDNS                    | 00 00 00 01           | Primary DNS. May retain stale value from prior DHCP lease on APIPA adapter.
++0x60   |  6   | g_NET_Interface_MAC_Table           | 00:0d:3a:1f:26:09     | Adapter MAC address (see note on g_NET_Interface_MAC_Table below).
++0x66   |  4   | buf_BBN_Incoming_Request + 0x10     | 59 3f 80 3e           | ⚠ NONCE ECHO — bytes [16..19] of the incoming query, copied verbatim.
++0x6a   |  4   | s1=0x04000740 byte-reversed         | 40 07 00 04           | Hardcoded capability flags (firmware constant).
++0x6e   |  2   | G_FW_MajorVersion byte-swapped      | 01 00                 | Firmware major version = 1
++0x70   |  2   | G_FW_MinorVersion byte-swapped      | 03 00                 | Firmware minor version = 3
++0x72   |  2   | G_FW_Revision byte-swapped          | 00 00                 | Firmware revision = 0
++0x74   |  2   | G_FW_Build byte-swapped             | 05 00                 | Firmware build = 5
++0x76   |  2   | G_HW_MajorVersion byte-swapped      | 01 00                 | Hardware major version = 1
++0x78   |  2   | G_HW_MinorVersion byte-swapped      | 00 00                 | Hardware minor version = 0
++0x7a   |  2   | G_HW_FeatureFlags byte-swapped      | 02 00                 | Hardware feature flags = 2
++0x7c   |  2   | G_HW_RegionID byte-swapped          | 15 00                 | Hardware region ID = 0x15 = 21
+```
+
+**Version byte-swap encoding**: each 16-bit version field is stored in native MIPS big-endian order but written to the response buffer via a byte-reversal sequence (`sra/sll/or` pattern at `8009bac4–8009bbe0`). The wire value is the byte-reversed form of the stored value. To decode: swap the two bytes. Wire `01 00` → stored `0x0001` = 1. Wire `15 00` → stored `0x0015` = 21.
+
+**Firmware version cross-reference**: the BBN response reports firmware 1.3.0.5 and hardware 1.0. Cross-referencing against the HANDSHAKE_RESP build string `"1.0.2.26 Boot: 1.3.0.06"` suggests the BBN fields encode the **boot firmware** version (1.3.x.x) separately from the runtime firmware (1.0.2.26). The hardware region ID 21 (`0x15`) corresponds to the regulatory domain code.
+
+**Wire-verified response hex (126 bytes):**
+```
+51 00 00 00 00 00 00 01 01 00 00 00
+4d 4e 2d 37 34 30 20 42 72 69 64 67 65 00 ...  ← "MN-740 Bridge" (+0x0c)
+4d 4e 2d 37 34 30 00 00 00 00 00 00 00 00 ...  ← "MN-740" (+0x2c)
+a9 fe 26 09                                    ← CFG_Device_IP (+0x4c)
+00 00 00 00                                    ← zero-filled gap (+0x50)
+ff ff 00 00                                    ← G_NET_ActiveSubnetMask (+0x54)
+00 00 00 00                                    ← zero-filled gap (+0x58)
+00 00 00 01                                    ← G_NET_PrimaryDNS (+0x5c)
+00 0d 3a 1f 26 09                              ← adapter MAC (+0x60)
+59 3f 80 3e                                    ← nonce echo (+0x66)
+40 07 00 04                                    ← capability flags (+0x6a)
+01 00 03 00 00 00 05 00                        ← FW major/minor/revision/build (+0x6e)
+01 00 00 00 02 00 15 00                        ← HW major/minor/flags/regionID (+0x76)
+```
+
+**Note on G_NET_PrimaryDNS at +0x5c**: the wire value `0x00000001` on this APIPA adapter is a stale value retained from a prior partial DHCP lease. A factory-reset adapter with no prior DHCP history shows `0x00000000` here.
+
+#### Nonce Echo — Firmware-Verified Mechanism
+
+The nonce echo was previously labelled `G_NET_SecondaryDNS` based on Ghidra's address resolution. The assembler proves this was wrong. At `8009ba60`:
+
+```asm
+addiu v1, s2, 0x10    ; s2 = buf_BBN_Incoming_Request; v1 = incoming + 0x10
+addiu param_1, s0, 0x66 ; s0 = buf_BBN_Outgoing_Response; dest = response + 0x66
+or    param_2, v1, zero  ; source = incoming_request + 0x10
+ori   param_3, zero, 0x4 ; size = 4 bytes
+jal   memcpy
+```
+
+Bytes `[16..19]` of the 20-byte query (the session nonce) are copied verbatim to response offset `+0x66`. `G_NET_SecondaryDNS` is never written anywhere in this function — that label was a Ghidra artefact from incorrect pointer resolution.
+
+#### Discovery Timing
+```
+PC broadcasts query          → adapter responds within ~77ms (first seen response)
+PC repeats query periodically → multiple discovery rounds before TFTP begins
+Query interval: ~300–1300ms  → adapter responds to each independently
+```
+
+MSBNUpdate runs several discovery rounds while waiting for the adapter to become reachable (e.g. while it finishes APIPA address assignment). The session nonce changes each round; the adapter echoes back whatever nonce it received in the most recent valid query.
+
+---
+
+### ⚠️ WIRE-VERIFIED CORRECTION: WRQ Auth Material Embedded in Filename Field
+**Source**: `trialupdate.pcapng` — Packet #32, wire-verified
+
+The existing spec documented the 58-byte auth header as a separate block *prepended before* the TFTP opcode, giving the structure `[58-byte header][TFTP opcode][filename]`. **This is incorrect.** The actual wire shows MSBNUpdate.exe packs the 58 bytes of auth material directly **inside the TFTP filename field**, using binary data as the filename string. The firmware's TFTP parser reads the auth bytes out of the filename before acting on them.
+
+#### Corrected WRQ Wire Format (port 16932)
+
+```
+Offset | Size | Field            | Wire value / Description
+-------|------|------------------|------------------------------------------------------
+0      | 2    | TFTP opcode      | 0x0002 = WRQ
+2      | 6    | auth.src_mac     | Adapter MAC address (e.g. 00:0d:3a:1f:26:09)
+8      | 32   | auth.padding     | 32 bytes (non-zero data from MSBNUpdate)
+40     | 20   | auth.HMAC-SHA1   | 20-byte HMAC (non-zero for WRQ in MSBNUpdate)
+60     | 1    | filename end     | 0x00 (null terminator — ends the filename field)
+61     | 5    | mode string      | "octet" (0x6f 0x63 0x74 0x65 0x74)
+66     | 1    | mode end         | 0x00 (null terminator — ends the mode field)
+```
+
+Total WRQ packet length: **67 bytes**
+
+**Wire-verified WRQ hex (frame 32, UDP payload):**
+```
+00 02  ← TFTP opcode: WRQ
+00 0d 3a 1f 26 09  ← auth.src_mac (adapter MAC)
+d1 d0 de c1 2a 5d e5 5d f8 38 02 ed ba 6c 56 b8
+cd 15 8e 23 25 52 16 08 2a b4 a2 04 fe 5f 6d 6b  ← auth.padding (32 bytes)
+89 d3 e1 6d 31 54 09 6e 1c 89 f6 b5 94 af b6 f7
+2a c2 49 80  ← auth.HMAC-SHA1 (20 bytes, non-zero)
+00  ← null terminator (end of filename field)
+6f 63 74 65 74  ← "octet"
+00  ← null terminator (end of mode field)
+```
+
+**Key differences from previous spec description:**
+
+The previous spec stated: `[58-byte auth header][TFTP WRQ packet]` where the TFTP opcode appeared after the header at offset `+0x3a`. This is wrong on the wire. The correct structure is a single standard TFTP WRQ where the filename field happens to contain 58 bytes of binary auth material.
+
+The firmware's TFTP receiver on port 16932 calls `XPP_Secure_Config_Update(param_2, ...)` where `param_2` points to the start of the UDP payload. For a WRQ this function reads `param_2[0:6]` as src_mac and `param_2[0x26:0x3a]` as the HMAC regardless of TFTP framing. Because the opcode `0x0002` occupies bytes `[0:2]` of the payload and the filename starts at byte `[2]`, the firmware's fixed-offset reads into the filename body correctly extract the auth material at the expected positions:
+
+```
+UDP payload offset | TFTP field context    | Auth field read
+-------------------|-----------------------|------------------
++0x00 (bytes 0-1)  | TFTP opcode (0x0002)  | (not auth — opcode)
++0x02 (bytes 2-7)  | Filename bytes 0-5    | auth.src_mac
++0x08 (bytes 8-39) | Filename bytes 6-37   | auth.padding
++0x26 (bytes 38-57)| Filename bytes 36-55  | auth.HMAC-SHA1
++0x3a (byte 58-59) | Filename bytes 56-57  | (last 2 bytes of filename)
++0x3c (byte 60)    | Filename null term    | (end of filename)
++0x3d (bytes 61-65)| Mode field "octet"    | (not auth)
+```
+
+⚠️ **The firmware reads auth material at fixed UDP payload offsets `+0x00` (MAC) and `+0x26` (HMAC), which land inside the TFTP filename field** because of the 2-byte TFTP opcode prefix. This is not a coincidence — MSBNUpdate was written to produce exactly this layout.
+
+#### src_mac field in WRQ auth
+
+For the RRQ auth (described elsewhere in this spec), `src_mac` must match `g_NET_Interface_MAC_Table` — the **adapter hardware MAC** on an unpaired adapter, or the **paired Xbox console MAC** on a paired adapter. For WRQ, `XPP_Secure_Config_Update` returns immediately without checking anything — so the src_mac value in WRQ auth is irrelevant to whether the transfer succeeds. MSBNUpdate puts the **adapter's own MAC** (`00:0d:3a:1f:26:09`) in the WRQ src_mac field, which is also correct for the RRQ case on an unpaired adapter.
+
+#### HMAC field in WRQ
+
+MSBNUpdate sends a **non-zero HMAC** in WRQ packets (unlike the all-zeros value the spec previously suggested for writes). Since the firmware ignores the WRQ auth entirely, the HMAC value is functionally irrelevant for firmware uploads. An emulator or custom tool implementing WRQ on port 16932 may send any value (including all-zeros) in the HMAC field without affecting transfer success.
+
+---
+
+### ⚠️ WIRE-VERIFIED: TFTP ACK 0 and Ephemeral Port
+**Source**: `trialupdate.pcapng` — Packets #33 and #34
+
+```
+Frame 32: PC → adapter:16932     WRQ (67 bytes, filename contains auth material)
+Frame 33: adapter:1205 → PC:1118 ACK block 0 (4 bytes: 00 04 00 00)  ← RTT ~10ms
+Frame 34: PC:1118 → adapter:1205 DATA block 1 (516 bytes)
+Frame 35: adapter:1205 → PC:1118 ACK block 1 (4 bytes: 00 04 00 01)
+...
+```
+
+The adapter allocates ephemeral port **1205** for the data transfer. All subsequent DATA and ACK exchanges use `adapter:1205 ↔ PC:1118` (the PC's original WRQ source port). This confirms the ephemeral port behaviour described in the TFTP section.
+
+ACK 0 wire (4 bytes): `00 04 00 00`
+ACK 1 wire (4 bytes): `00 04 00 01`
+
+---
+
+### Wire-Verified Firmware Block 1 Content
+**Source**: `trialupdate.pcapng` — Frame 34, DATA block 1
+
+The first 512-byte firmware block transferred contains the following human-readable strings, which identify it as the **boot stage** firmware (stage 1 of MSBNUpdate's two-stage update):
+
+```
+String                              | Significance
+------------------------------------|------------------------------------------
+"GL2454AP-LT1-M80     -0000.00.00" | Hardware board identifier (GL2454AP chipset)
+"Sat, 06 Sep 2003    "              | Firmware build date
+"MN-740 Bootrom"                    | Firmware stage: boot ROM
+00:11:22:33:44:55                   | Placeholder/test MAC in firmware image
+```
+
+This confirms that MSBNUpdate stages the boot firmware first, consistent with the `SKU_MN-740_BOOT_FW` → `SKU_MN-740_RUNTIME_FW` ordering documented from string analysis. The build date of 6 September 2003 places boot ROM development approximately 12–18 months before the retail launch.
+
+---
+
+### Wire-Verified DHCP Behaviour (Adapter, No Server Present)
+**Source**: `trialupdate.pcapng` — Frames 1 and 7824
+
+When no DHCP server responds, the adapter falls back to APIPA (`169.254.x.x`) and continues sending DHCP DISCOVER broadcasts indefinitely with exponential backoff. The vendor class and hostname fields are wire-verified:
+
+```
+DHCP Option 12 (Hostname):            "MN-740"
+DHCP Option 60 (Vendor class):        "MSFT 98"
+DHCP Option 50 (Requested IP):        192.168.1.181 (retained from previous session)
+DHCP Option 61 (Client ID hw type):   0x01 (Ethernet)
+DHCP Option 55 (Param request list):  Subnet Mask, Router, DNS, Domain Name
+DHCP Transaction ID pattern:          0x22334468, 0x22334469, ... (incrementing)
+DHCP seconds elapsed:                 291 (first), increments per retry
+Retry interval (observed):            ~2s, ~4s, ~8s (doubling)
+```
+
+The adapter retains the last-used DHCP IP (192.168.1.181) in NVRAM and requests it on every subsequent DISCOVER, consistent with the `g_NET_InterfaceStatus` / `CFG_Device_IP` save behaviour described in the HANDSHAKE_RESP section.
 
 ### IPHlpSvr.exe
 
@@ -4307,8 +4744,10 @@ This confirms the adapter's silent-drop entries for types `0x04`, `0x05`, `0x0B`
 
 ### Footer
 **All reverse engineering was based on the mn740 firmware version v1.0.2.26**
-**Aditional supplementary reverse engineering was based on xonlinedash.xbe from dash 5960**
-**Aditional supplementary reverse engineering was based on mn740Update.exe official Microsoft update binary**
+**All supplementary reverse engineering was based on xonlinedash.xbe from dash 5960**
 **Captures and initial fuzzing was done using custom tooling**
+**Live firmware update capture: trialupdate.pcapng — MSBNUpdate.exe against real MN-740 hardware**
 **Disassembly was done using Ghidra v12**
+**MSBNUpdate.exe analysis: string extraction from official Microsoft update binary (build path d:\Net2\src\DINGO\exe\MSBNUpdate\Release)**
+**BBN discovery protocol: firmware-verified from NML_bin.c decompile + BBN_Handle_Discovery_Task and BBN_Init_Sockets assembler (MIPS)**
 **Signed off by Jonathan Brophy — Professor_jonny@hotmail.com**
