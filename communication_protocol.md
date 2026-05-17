@@ -3747,8 +3747,14 @@ Constraints:
 **`factory`** — handler: `CMD_HANDLER_RESTORE_FACTORY_DEFAULT_AND_REBOOT`
 Calls `Flash_Commit_Settings()` then `CFG_Save_To_Flash()` then triggers a reboot. Restores all NVRAM fields to firmware defaults. This is a destructive, immediate operation with no confirmation prompt.
 
-**`ping <host>`** — handler: `cli_cmd_ping`
-Initiates an ICMP echo session to the specified host. The host argument is parsed as a dotted-decimal IP address or hostname. `ping` is also invoked internally by the DHCP gateway reachability check and is not exclusively a CLI command.
+- 20 bytes of auth challenge response;
+- 84 bytes of auth copyright string (no zero termination, the size is fixed);
+- 32 bytes of wireless adapter name string (padded with zeroes, no zero termination, the size is fixed);
+- 32 bytes of wireless adapter firmware version (padded with zeroes, no zero termination, the size is fixed);
+- 51 bytes of yet unknown data;
+- 1 byte defining the current SSID length;
+- 32 bytes of current SSID string (padded with zeroes, no zero termination, the size is fixed);
+- 4 bytes of yet unknown data.
 
 **`mem <address>`** — handler: `cli_cmd_memory_dump`
 Dumps memory starting at the given hex address. There is no confirmed write counterpart in the command table for this firmware build.
@@ -3802,14 +3808,129 @@ After the boot sequence completes, the device is in login-gate state. The serial
 
 ---
 
-### Footer
-**All reverse engineering was based on the mn740 firmware version v1.0.2.21 with some WGA54G specific additions**
-**All supplementary reverse engineering was based on xonlinedash.xbe from dash 5960**
-**Captures and initial fuzzing was done using custom tooling**
-**Live firmware update capture using MSBNUpdate.exe: trialupdate.pcapng — MSBNUpdate.exe against real MN-740 hardware**
-**MSBNUpdate.exe analysis: string extraction from official Microsoft update binary**
-**BBN discovery protocol: firmware-verified from NML_bin.c decompile + BBN_Handle_Discovery_Task and BBN_Init_Sockets assembler (MIPS)**
-**Disassembly was done using Ghidra v12.0.4**
-**Some automated Disassembly work was done by Claude.AI attached to Ghidra MCP on xonlinedash.xbe after hand reverse engineering of mn740 and manual creation**
-**Documentation was cross checked and corrected by Claude.AI with a custom MCP server connected to Pulsar (formally atom)**
-**Signed off by Jonathan Brophy — Professor_jonny@hotmail.com**
+### PACKET_TYPE_CONNECT_TO_SSID_REQUEST
+
+Payload uses TLV (Tag-Length-Value) encoding. See "Protocol Relationships" section below for details.
+
+**Confirmed TLV Tags:**
+- `0x01`: SSID (up to 32 bytes)
+- `0x02`: Password/Passphrase (up to 63 bytes)
+- `0x03`: Security Type (1 byte)
+
+### PACKET_TYPE_CONNECT_TO_SSID_RESPONSE
+
+Payload structure not yet fully documented.
+
+---
+
+## Protocol Relationships
+
+### TLV Encoding (Industry Standard)
+The `PACKET_TYPE_CONNECT_TO_SSID_REQUEST` payload uses standard Tag-Length-Value (TLV) encoding, commonly found in:
+- Wi-Fi Protected Setup (WPS) configuration messages
+- IEEE 802.16 WiMAX configuration files
+- LDAP directory information trees
+- Smart card EMV payment systems
+
+**TLV Structure:**
+```
+Tag (1 byte) | Length (1 byte) | Value (variable)
+```
+
+**Confirmed Tags:**
+- `0x01`: SSID (up to 32 bytes, per IEEE 802.11)
+- `0x02`: Password/Passphrase (up to 63 bytes for WPA-PSK)
+- `0x03`: Security Type (1 byte)
+
+**Security Type Values (Tag 0x03):**
+
+For original Xbox Wireless Adapter (2002-2005 era):
+- `0x00`: Open/No Security
+- `0x01`: WEP (Wired Equivalent Privacy - only common security at launch)
+- `0x02`: WPA-PSK (WPA with Pre-Shared Key - available after 2003)
+
+**Historical Note:** WPA2 was not ratified until June 2004, after the original Xbox wireless adapter was released.
+
+This TLV format allows extensibility - new configuration parameters can be added by defining new tag values without breaking existing implementations.
+
+### Relationship to WPS
+While the Xbox protocol uses a custom transport layer (MS NLB heartbeat frames with HMAC-SHA1 authentication), the WiFi configuration payload structure closely resembles Wi-Fi Protected Setup (WPS) TLV encoding. However, unlike WPS which uses EAP (Extensible Authentication Protocol) over standard 802.11 frames, Xbox uses a proprietary Ethernet-based transport.
+
+**Key Difference:** Standard WPS uses 16-bit attribute IDs (e.g., 0x1045 for SSID), while Xbox uses simplified 8-bit tags (0x01 for SSID), suggesting Microsoft adapted WPS concepts for their lightweight custom protocol.
+
+**WPS to Xbox Tag Mapping:**
+| Xbox Tag | WPS Attribute ID | Description |
+|----------|------------------|-------------|
+| `0x01`   | `0x1045`         | SSID / Network Name |
+| `0x02`   | `0x1027`         | Network Key / Passphrase |
+| `0x03`   | `0x1003`         | Authentication Type |
+
+---
+
+## Appendix A: Reverse Engineering Notes (Xbox Internals - Unverified)
+
+The following information is derived from Ghidra analysis of the xonlinedash.xbe binary and represents **educated guesses about Xbox internal implementation**. These details are **NOT required for a working emulator** - the Python and C reference implementations work without implementing any of this logic.
+
+### Xbox Internal State Structure (Speculative)
+
+Analysis suggests the Xbox maintains an internal state structure (`AutoClass1`) at offset `0x1000` with the following fields:
+
+- **Offset 0x02** - `source_mac` (6 bytes) - MAC address of wireless adapter
+- **Offset 0x0c** - `response_type_enum` (1 byte) - Response type indicator (unconfirmed purpose)
+- **Offset 0x0d** - `is_connected_maybe` (1 byte) - Possible connection status flag
+- **Offset 0x14** - `nlb_frame_copy` (pointer) - Possible copy of last NLB frame
+- **Offset 0x18** - `kernel_tick_count` (4 bytes) - System timing value
+- **Offset 0x1c** - `kernel_tick_count_2` (4 bytes) - Additional timing value
+- **Offset 0x20** - `delay_maybe` (4 bytes) - Possible retry delay value
+- **Offset 0x24** - `attempts_count_maybe` (4 bytes) - Possible retry counter
+- **Offset 0x2c** - `hmac_message` (16 bytes) - HMAC challenge data storage
+- **Offset 0x40** - `error_code` (pointer) - Possible error code storage
+
+**Note:** Field names ending in "maybe" indicate uncertainty. The structure name `AutoClass1` with comment "PlaceHolder Class Structure" indicates this is a Ghidra-generated placeholder, not a confirmed structure from debug symbols.
+
+### Speculative Retry Behavior
+
+Based on the presence of timing and counter fields, the Xbox *may* implement:
+1. Timeout detection using `kernel_tick_count` values
+2. Retry attempts tracked in `attempts_count_maybe`
+3. Exponential backoff using `delay_maybe`
+4. Frame retransmission from cached `nlb_frame_copy`
+
+## Appendix B: WPS-Based Speculation (Unverified)
+
+Based on the similarity to Wi-Fi Protected Setup (WPS) protocol, the Xbox protocol **could** support additional TLV tags beyond the confirmed 0x01-0x03.
+
+### Potential Additional TLV Tags
+
+Standard WPS includes these attributes that Xbox *might, could* theoretically support:
+
+| Xbox Tag | WPS Equivalent | Name              | Max Length | Description |
+|----------|----------------|-------------------|------------|-------------|
+| `0x04`?  | `0x100F`       | Encryption Type   | 1 byte     | AES vs TKIP cipher specification |
+| `0x05`?  | `0x1020`       | MAC Address       | 6 bytes    | Target AP BSSID/MAC address |
+| `0x06`?  | `0x1026`       | Network Index     | 1 byte     | Priority/preference for multiple networks |
+| `0x07`?  | `0x1028`       | Network Key Index | 1 byte     | Which WEP key to use (1-4) |
+
+### Speculative Encryption Type Values (Tag 0x04?)
+
+If implemented, would specify the cipher independently from authentication:
+
+| Value  | Name  | Description | Era |
+|--------|-------|-------------|-----|
+| `0x00` | None  | Open network (no encryption) | All |
+| `0x01` | WEP   | RC4-based encryption (insecure, deprecated) | 2001+ |
+| `0x02` | TKIP  | Temporal Key Integrity Protocol (used with WPA) | 2003+ |
+| `0x04` | AES   | Advanced Encryption Standard / CCMP (WPA2, post-2004) | 2005+ (Xbox 360) |
+
+### Extended Security Type Values (Tag 0x03)
+
+Additional values that *could* exist based on WPS specification :
+
+| Value  | Name              | Description
+|--------|-------------------|-------------
+| `0x04` | WPA2-Personal     | WPA2 with PSK (post-2004)
+| `0x08` | WPA-Enterprise    | 802.1X authentication with RADIUS
+| `0x10` | WPA2-Enterprise   | WPA2 with 802.1X authentication
+| `0x20` | WPA3-Personal     | Latest WPA3 standard (2018+)
+
+---
