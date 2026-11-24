@@ -263,9 +263,9 @@ Offset | Size     | Field
 168    | 6 bytes  | BSSID of connected AP, or 00:00:00:00:00:00 if not connected
 174    | 1 byte   | Security capability byte — see WPA Capability Bytes below
 175    | 1 byte   | Cipher capability byte — see WPA Capability Bytes below
-176    | 4 bytes  | 2.4ghz Channel allow list bitmask — hardcoded 0x00000FFE (channels 1-11), big-endian on the wire: 00 00 0f fe (capture-verified)
+176    | 4 bytes  | Ad hoc 802.11b/g channel list bitmask — hardcoded 0x00000FFE (channels 1-11), big-endian on the wire: 00 00 0f fe (capture-verified)
        |          | Rejection rule: bit 0 set OR bit >14 set → entire response rejected
-180    | 28 bytes | Extended Channel allow list bitmask (1=enabled, 0=disabled, per-bit for ch 1–200)
+180    | 28 bytes | Ad hoc 802.11a channel list bitmask (1=enabled, 0=disabled, per-bit for ch 1–200)
        |          | Stock firmware sends all zeros (all channels disabled)
        |          | Channel allow list overflow,Parsed, hard-rejected by XBE always 0x00 0x00 0x00
 208    | 1 byte   | Radio mode capability bitmask — hardcoded 0x05
@@ -369,14 +369,14 @@ Bit  | Mask | Stock value | Meaning
 **Stock values**: the adaptor has a function stub indicating the cipher mode the device supports.
 byte 174=`0x06`, byte 175=`0x07` → WPA PSK option never shown; No Security, WEP-64, WEP-128 all shown.
 
-### 2.4ghz Channel allow list bitmask (Bytes 176–179)
-This bitfield is used as a reglatory bitmask to inform the Xbox what 2.4ghz channels are allowed to be used and display in the Xbox dash.
+### Ad hoc 802.11b/g channel list bitmask (Bytes 176–179)
+This bitfield is the channel list for the dash's Ad hoc 802.11b/g mode: it is the set of channels offered on that mode's Channel screen.
 
-This list is a fallback list and is second priority to the extended channel allow bitmask (bytes 180-207)
+It is independent of the Ad hoc 802.11a list in bytes 180-207. Each list feeds only its own mode's Channel screen, and neither is a fallback or priority list for the other.
 
 Dash behaviour (decompile, 2026-11-24): the dash stores this word as a channel list and rejects the handshake if bit 0 or any bit above 14 is set. The Channel screen of Ad hoc 802.11b/g lists these channels. The Channel screen of Ad hoc 802.11a lists the extended block (bytes 180-207, read back to front: channel N is bit N%8 of frame byte 233-N/8, up to channel 200) and defaults to its first entry, so that block should hold 5 GHz channels only. Infrastructure mode has no channel choice. The Ghidra name "rate_list" for the extended list is wrong.
 
-2.4ghz Channel allow list bitmask in the mn-740 this list is dynamically created based off the regon code of the adaptor set with Tag 0x84:
+On the MN-740 this list is created from the region code of the adaptor set with Tag 0x84:
 ```
 For example:
 
@@ -388,10 +388,10 @@ Japan: min=14, max=14 → bit 14 set → 0x00004000
 
 Rejection rule: bit 0 set OR bit >14 set → entire HS_RESP rejected.
 
-### Extended Channel allow list Bitmask (Bytes 180–207)
+### Ad hoc 802.11a channel list bitmask (Bytes 180–207)
 
-This bitfield is used as a regulatory bitmask to inform the Xbox what channels are allowed to be used and display in the Xbox dash.
-this list is the primary source if set, if a channel is not set the dash will fallback to the 2.4ghz channel allow bitmask
+This bitfield is the channel list for the dash's Ad hoc 802.11a mode: it is the set of channels offered on that mode's Channel screen.
+It does not override bytes 176-179: the two lists are separate, one per ad hoc mode.
 Total of 28 bytes, Each bit represents a channel 1-200 : **1=enabled, 0=disabled**.
 bit 0 has no special handling and maps to channel 0 it will not cause rejection but setting bits above 200 will cause rejection.
 
@@ -3754,8 +3754,8 @@ struct XPP_HandshakeResp_Payload {
     byte   bssid[6];              // +0xA8  Connected AP MAC or zeros
     byte   security_caps;         // +0xAE  Byte 174 — WPA capability flags
     byte   cipher_caps;           // +0xAF  Byte 175 — cipher capability flags
-    uint   chan_bitmask_24ghz;    // +0xB0  Bytes 176-179 — 2.4GHz channel mask
-    byte   chan_bitmask_ext[28];  // +0xB4  Bytes 180-207 — extended channel mask
+    uint   chan_bitmask_24ghz;    // +0xB0  Bytes 176-179 - ad hoc 802.11b/g channel mask
+    byte   chan_bitmask_ext[28];  // +0xB4  Bytes 180-207 - ad hoc 802.11a channel mask
     byte   radio_mode_caps;       // +0xD0  Byte 208 — radio mode bitmask
     byte   dhcp_state;            // +0xD1  Byte 209 — DHCP state
     uint   ip_address;            // +0xD2  Bytes 210-213 — current IP big-endian
